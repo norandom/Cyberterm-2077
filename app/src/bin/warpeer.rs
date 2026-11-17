@@ -1,4 +1,4 @@
-#![cfg_attr(feature = "release_bundle", windows_subsystem = "windows")]
+#![cfg_attr(windows, windows_subsystem = "windows")]
 
 use anyhow::Result;
 use warp_core::AppId;

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Package a native release-desktop build; run from the repository root."""
 import hashlib
+import json
+import subprocess
 from pathlib import Path
 import shutil
 import sys
@@ -15,6 +17,10 @@ if staging.exists():
     shutil.rmtree(staging)
 staging.mkdir(parents=True)
 dist.mkdir(exist_ok=True)
+metadata = staging / "resources/bundled/metadata"
+metadata.mkdir(parents=True)
+version = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], text=True).strip()
+(metadata / "version.json").write_text(json.dumps({"warp_version": version, "product": "Warpeer"}) + "\n")
 exe = "warpeer.exe" if platform == "windows" else "warpeer"
 shutil.copy2(Path("target/release-desktop") / exe, staging / exe)
 for filename in ("LICENSE-AGPL", "LICENSE-MIT", "NOTICE"):
