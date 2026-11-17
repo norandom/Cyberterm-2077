@@ -61,6 +61,10 @@ jobs:
           test -f "$clang_lib/libclang.dylib"
           echo "CLANG_PATH=$clang_path" >> "$GITHUB_ENV"
           echo "LIBCLANG_PATH=$clang_lib" >> "$GITHUB_ENV"
+          sdk_path="$(xcrun --sdk macosx --show-sdk-path)"
+          echo "SDKROOT=$sdk_path" >> "$GITHUB_ENV"
+          echo "BINDGEN_EXTRA_CLANG_ARGS=-isysroot $sdk_path" >> "$GITHUB_ENV"
+          test -f "$sdk_path/usr/include/simd/simd.h"
           echo "MACOSX_DEPLOYMENT_TARGET=11.0" >> "$GITHUB_ENV"
       - name: Install Rust
         shell: bash
