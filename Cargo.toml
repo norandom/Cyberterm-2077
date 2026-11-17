@@ -587,3 +587,10 @@ tikv-jemalloc-sys = { git = "https://github.com/warpdotdev/jemallocator.git", re
 [patch."https://github.com/warpdotdev/session-sharing-protocol.git"]
 # Uncomment for local development of session-sharing-protocol
 # session-sharing-protocol = { path = "../session-sharing-protocol" }
+
+# Keep native desktop CI builds within GitHub-hosted runner memory limits.
+[profile.release-desktop]
+inherits = "release-warpeer"
+lto = false
+codegen-units = 16
+opt-level = 2

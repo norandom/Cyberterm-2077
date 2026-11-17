@@ -1,0 +1,61 @@
+name: Desktop builds
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    name: ${{ matrix.platform }} x86-64
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux
+          - os: windows-2022
+            platform: windows
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_FULL_PROFILE: release-desktop
+      CARGO_BIN_NAME: warpeer
+      WARP_APP_NAME: Warpeer
+      GIT_RELEASE_TAG: ${{ github.ref_name }}
+      LIBCLANG_PATH: ${{ matrix.platform == 'windows' && 'C:\Program Files\LLVM\bin' || '/usr/lib/llvm-18/lib' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake pkg-config protobuf-compiler libssl-dev libfreetype-dev libexpat1-dev libgit2-dev libfontconfig1-dev libasound2-dev libclang-18-dev libxkbcommon-dev libwayland-dev libxcb1-dev libx11-dev libxi-dev libxcursor-dev
+      - name: Windows build dependencies
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install protoc --yes --no-progress
+      - name: Install Rust
+        shell: bash
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal
+          rustc --version
+          test "$(rustc -vV | sed -n 's/host: //p')" = '${{ runner.os == 'Windows' && 'x86_64-pc-windows-msvc' || 'x86_64-unknown-linux-gnu' }}'
+      - name: Build Warpeer
+        shell: bash
+        run: cargo build --locked -p warp --bin warpeer --no-default-features --features warpeer --profile release-desktop
+      - name: Package archive and checksum
+        shell: bash
+        run: python script/warpeer/package-desktop.py ${{ matrix.platform }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: warpeer-${{ matrix.platform }}-x86_64
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14

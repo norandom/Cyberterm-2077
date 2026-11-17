@@ -17,6 +17,28 @@ Warpeer never sends telemetry or crash reports, does not auto-update, does not r
 server, and does not require sign-in. It stores its data in its own `.warpeer` and application
 support directories, separate from Warp.
 
+## Windows and Linux builds (this fork)
+
+This fork adds GitHub Actions builds for Intel/AMD x86-64 Windows and Linux.
+Download the platform artifact from a successful [Desktop builds run](https://github.com/norandom/warpeer/actions/workflows/build-desktop.yml).
+Each artifact contains a portable archive and its SHA-256 checksum. Extract the
+whole archive, then run `warpeer.exe` on Windows or `./warpeer` on Linux.
+Windows builds are unsigned. Linux builds target Ubuntu 24.04 (glibc 2.39 or newer)
+and need a graphical session, fontconfig, ALSA, X11/Wayland and a working GPU driver.
+These platforms are experimental until validated on real desktops.
+
+The workflow also supports manual runs. Build locally with Rust 1.92.0 and the
+native dependencies listed in `.github/workflows/build-desktop.yml`:
+
+```sh
+CARGO_FULL_PROFILE=release-desktop CARGO_BIN_NAME=warpeer WARP_APP_NAME=Warpeer \
+  cargo build --locked -p warp --bin warpeer --no-default-features --features warpeer --profile release-desktop
+python script/warpeer/package-desktop.py linux # or windows
+```
+
+The desktop profile disables LTO to reduce CI memory use. It uses the same
+terminal-only Warpeer features as upstream, with no login or trial mode.
+
 ## Download
 
 Get the notarized macOS disk image from
