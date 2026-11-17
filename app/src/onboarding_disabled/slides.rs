@@ -24,7 +24,7 @@ pub enum AgentAutonomy {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentDevelopmentSettings {
-    pub selected_model_id: LLMId,
+    pub selected_model_id: Option<LLMId>,
     pub autonomy: Option<AgentAutonomy>,
     pub cli_agent_toolbar_enabled: bool,
     pub session_default: SessionDefault,
@@ -35,7 +35,7 @@ pub struct AgentDevelopmentSettings {
 impl AgentDevelopmentSettings {
     pub fn new(default_model_id: LLMId) -> Self {
         Self {
-            selected_model_id: default_model_id,
+            selected_model_id: Some(default_model_id),
             autonomy: Some(AgentAutonomy::default()),
             cli_agent_toolbar_enabled: false,
             session_default: SessionDefault::Terminal,

@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use settings::{Setting, SettingsManager};
+use warp_core::channel::ChannelState;
 use warp_core::features::FeatureFlag;
 use warp_core::semantic_selection::SemanticSelection;
 use warp_errors::report_if_error;
@@ -45,7 +46,7 @@ use crate::terminal::shared_session::settings::SharedSessionSettings;
 use crate::terminal::warpify::settings::WarpifySettings;
 use crate::themes::theme::ThemeKind;
 use crate::undo_close::UndoCloseSettings;
-use crate::window_settings::WindowSettings;
+use crate::window_settings::{WindowSettings, stage_legacy_background_backdrop};
 use crate::workflows::aliases::WorkflowAliases;
 use crate::workspace::tab_settings::{
     TabSettings, VerticalTabsCompactSubtitle, VerticalTabsDisplayGranularity,
@@ -91,6 +92,8 @@ pub fn register_all_settings(ctx: &mut AppContext) {
     TerminalVisualSettings::register(ctx);
     SelectionSettings::register(ctx);
     InputModeSettings::register(ctx);
+    #[cfg(all(feature = "warpeer", feature = "local_fs"))]
+    crate::local_runbooks::LocalRunbookSettings::register(ctx);
     ThemeSettings::register(ctx);
     TuiAutoupdateSettings::register(ctx);
     TuiThemeSettings::register(ctx);
@@ -99,6 +102,9 @@ pub fn register_all_settings(ctx: &mut AppContext) {
     AccessibilitySettings::register(ctx);
     NativePreferenceSettings::register(ctx);
     CloudPreferencesSettings::register(ctx);
+    if ChannelState::iap_config().is_some() {
+        super::IapRoutingSettings::register(ctx);
+    }
     WarpDrivePrivacySettings::register(ctx);
     UserAppInstallDetectionSettings::register(ctx);
     AppIconSettings::register(ctx);
@@ -152,6 +158,7 @@ pub fn init(
     if needs_settings_file_migration(ctx) {
         migrate_native_settings_to_settings_file(ctx);
     }
+    stage_legacy_background_backdrop(ctx);
 
     apply_product_profile_defaults(ctx);
 

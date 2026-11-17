@@ -4,6 +4,18 @@ schema {
   subscription: RootSubscription
 }
 
+enum GitHubCredentialMode {
+  LEGACY
+  RESTRICTED_INSTALLATION
+}
+
+enum TaskGitCredentialProvider {
+  GITHUB
+  GITLAB
+  AZURE_DEVOPS
+  CODE_STORAGE
+}
+
 """
 Directs the executor to defer this fragment when the `if` argument is true or undefined.
 """
@@ -87,6 +99,7 @@ type AICreditAvailability {
 
 enum AICreditAvailabilityDenialReason {
   DELINQUENT
+  ENTERPRISE_PER_UNASSIGNED_USER_SPEND_LIMIT_HIT
   ENTERPRISE_PER_USER_SPEND_LIMIT_HIT
   ENTERPRISE_TEAM_SPEND_LIMIT_HIT
   ENTERPRISE_WORKSPACE_SPEND_LIMIT_HIT
@@ -238,18 +251,42 @@ enum AddonCreditAutoReloadStatus {
 type AddonCreditsOption {
   credits: Int!
   priceUsdCents: Int!
+
+  """
+  The usage, in cents, that the pack buys when add-on packs are sold in dollars.
+  Null while packs are sold in credits.
+  """
+  usageCents: Int
 }
 
 type AddonCreditsSettings {
   autoReloadEnabled: Boolean!
   maxMonthlySpendCents: Int
+
+  """
+  The credit count the selected auto-reload pack is listed under in the add-on options.
+  """
   selectedAutoReloadCreditDenomination: Int
+
+  """
+  The list price of the selected auto-reload pack, which is the usage it buys for a team
+  billed in dollars.
+  """
+  selectedAutoReloadUsageCents: Int
 }
 
 input AddonCreditsSettingsInput {
   autoReloadEnabled: Boolean
   maxMonthlySpendCents: Int
+
+  """Selects the auto-reload pack by the credit count it is listed under."""
   selectedAutoReloadCreditDenomination: Int
+
+  """
+  Selects the auto-reload pack by its list price. Takes precedence over the credit
+  denomination, which must name the same pack when both are given.
+  """
+  selectedAutoReloadUsageCents: Int
 }
 
 enum AdminEnablementSetting {
@@ -264,6 +301,7 @@ enum AgentHarness {
   CODEX
   GEMINI
   OZ
+  PI
 }
 
 """Controls whether a team can configure settings for agent harnesses."""
@@ -338,11 +376,14 @@ enum AgentTaskState {
 
 """Status message for an agent task."""
 type AgentTaskStatusMessage {
+  """Structured platform error information, when the status represents an error."""
+  error: PlatformErrorInfo
   """
   Machine-readable error code from the platform error catalog.
   Only present when the status message represents an error.
+  Deprecated in favor of error.
   """
-  errorCode: PlatformErrorCode
+  errorCode: PlatformErrorCode @deprecated(reason: "Use error instead")
 
   """The status message text."""
   message: String!
@@ -354,19 +395,22 @@ type AgentTaskStatusMessage {
   retrying without addressing the underlying cause (e.g. insufficient credits,
   invalid configuration) will not succeed.
   """
-  retryable: Boolean
+  retryable: Boolean @deprecated(reason: "Use error.retryable instead")
 }
 
 input AgentTaskStatusMessageInput {
+  """Structured platform error information supplied by the client."""
+  error: PlatformErrorInput
   """
   Machine-readable error code from the platform error catalog.
   Only set when the status message represents an error.
-  The server derives retryability from the error code.
+  Deprecated in favor of error.
   """
-  errorCode: PlatformErrorCode
+  errorCode: PlatformErrorCode @deprecated(reason: "Use error instead")
 
   """The status message text."""
   message: String!
+
 }
 
 enum AgentVisibility {
@@ -579,6 +623,8 @@ type BonusGrant {
   requestCreditsGranted: Int!
   requestCreditsRemaining: Int!
   scope: BonusGrantScope!
+  usageCentsGranted: Float
+  usageCentsRemaining: Float
   userFacingMessage: String
 }
 
@@ -681,6 +727,22 @@ type ByoEndpointPolicy {
 type CategoryTokenBreakdown {
   category: String!
   tokens: Int!
+}
+
+enum ChargeUnit {
+  CREDITS
+  CENTS
+}
+
+type ChatGPTConnection {
+  connectedAt: Time!
+  email: String
+
+  """
+  Whether the server currently holds delegated ChatGPT credentials that can be
+  attached to OpenAI requests on the user's behalf.
+  """
+  tokenSharingActive: Boolean!
 }
 
 input ClientContext {
@@ -888,6 +950,23 @@ type ConversationUsageMetadata {
   platformCreditsSpent: Float!
   """The cumulative provider cost in US cents, when available."""
   totalProviderCostInCents: Float
+
+  """
+  The cumulative inference cost billed to the customer so far in the
+  conversation, in US cents (fractional cents allowed), at the customer's own
+  price: usage drawn from a grant or metered at what was paid for it, and
+  included usage at the plan's allowance rate. Null when the server cannot
+  establish a complete historical baseline, or when pricing transparency is
+  disabled server-side.
+  """
+  totalBilledCostInCents: Float
+
+  """
+  Aggregate platform cost (in US cents) charged so far in the conversation,
+  summed across every usage category and model. Null when pricing
+  transparency is disabled server-side.
+  """
+  totalPlatformCostInCents: Float
   summarized: Boolean!
 
   """
@@ -915,6 +994,9 @@ input CreateAgentTaskInput {
 
   """Optional environment UID to run the task in."""
   environmentUid: ID
+
+  """Optional JSON-serialized string-to-string run metadata."""
+  metadata: String
 
   """Optional run ID of the parent that spawned this local task."""
   parentRunId: ID
@@ -995,6 +1077,11 @@ type CreateGenericStringObjectOutput implements Response {
 union CreateGenericStringObjectResult = CreateGenericStringObjectOutput | UserFacingError
 
 input CreateManagedSecretInput {
+  """
+  Optional override of the provider's default API URL. Only valid for
+  LLM_PROVIDER_API_KEY secrets.
+  """
+  baseUrl: String
   description: String
   encryptedValue: String!
   name: String!
@@ -1116,6 +1203,7 @@ enum CustomerType {
   LIGHTSPEED
   PROSUMER
   PRO_TRIAL
+  SCALE
   SELF_SERVE
   TEAM_TRIAL
   TURBO
@@ -1202,6 +1290,30 @@ type DirectApiUsOnlyInferencePolicy {
   default: Boolean!
 }
 
+"""
+disconnectChatGPT unlinks the calling user's ChatGPT account and discards any
+delegated credentials held for it. Succeeds even when nothing is linked.
+"""
+type DisconnectChatGPTOutput implements Response {
+  responseContext: ResponseContext!
+}
+
+union DisconnectChatGPTResult = DisconnectChatGPTOutput | UserFacingError
+
+"""
+startChatGPTLink begins linking a ChatGPT account to the calling user's Warp
+account, regardless of the ChatGPT account's email. The returned URL must be
+opened in a browser; it is bound to the caller by a short-lived, single-use
+ticket. The browser flow ends at continueUrl with `chatgpt_linked=1` on
+success or `chatgpt_error=<code>` on failure.
+"""
+type StartChatGPTLinkOutput implements Response {
+  authorizationUrl: String!
+  responseContext: ResponseContext!
+}
+
+union StartChatGPTLinkResult = StartChatGPTLinkOutput | UserFacingError
+
 type DirectLinkSharingPolicy {
   toggleable: Boolean!
 }
@@ -1218,6 +1330,13 @@ type DiscoverableTeamData {
   numMembers: Int!
   teamAcceptingInvites: Boolean!
   teamUid: ID!
+}
+
+type DiscoverableWorkspaceData {
+  memberCount: Int!
+  name: String!
+  openTeams: [DiscoverableTeamData!]!
+  workspaceUid: ID!
 }
 
 enum DisplaySetting {
@@ -1856,6 +1975,8 @@ type HarnessInfo {
   displayName: String!
   enabled: Boolean!
   harness: AgentHarness!
+  piVersion: String
+  piProviders: [PiProviderInfo!]
 }
 
 input HarnessInput {
@@ -1892,6 +2013,29 @@ input HarnessSettingsEntryInput {
 input HarnessSettingsInput {
   harnessConfigs: [HarnessSettingsEntryInput!]
   optOutOfNewHarnesses: Boolean
+}
+
+"""
+The transport the agent process drives a run's third-party harness over.
+"""
+enum HarnessTransport {
+  """The harness is driven over the Agent Client Protocol."""
+  ACP
+
+  """The harness is driven through a terminal."""
+  PTY
+}
+
+"""
+Why the harness is driven over a PTY although the run was dispatched over ACP, when no ACP
+adapter was found on PATH either.
+"""
+enum HarnessTransportFallbackReason {
+  """No coding CLI sidecar was mounted."""
+  NO_SIDECAR
+
+  """A sidecar was mounted but carries no ACP adapter."""
+  SIDECAR_WITHOUT_ADAPTER
 }
 
 enum HostEnablementSetting {
@@ -1981,6 +2125,16 @@ type IssueTaskIdentityTokenOutput implements Response {
 }
 
 union IssueTaskIdentityTokenResult = IssueTaskIdentityTokenOutput | UserFacingError
+input JoinTeamInWorkspaceInput {
+  teamUid: ID!
+}
+
+type JoinTeamInWorkspaceOutput implements Response {
+  responseContext: ResponseContext!
+  success: Boolean!
+}
+
+union JoinTeamInWorkspaceResult = JoinTeamInWorkspaceOutput | UserFacingError
 
 input JoinTeamWithTeamDiscoveryInput {
   entrypoint: TeamDiscoveryEntrypoint!
@@ -1993,6 +2147,18 @@ type JoinTeamWithTeamDiscoveryOutput implements Response {
 }
 
 union JoinTeamWithTeamDiscoveryResult = JoinTeamWithTeamDiscoveryOutput | UserFacingError
+
+input JoinWorkspaceFromDiscoveryInput {
+  teamUid: ID
+  workspaceUid: ID!
+}
+
+type JoinWorkspaceFromDiscoveryOutput implements Response {
+  responseContext: ResponseContext!
+  success: Boolean!
+}
+
+union JoinWorkspaceFromDiscoveryResult = JoinWorkspaceFromDiscoveryOutput | UserFacingError
 
 input LeaveObjectInput {
   objectUid: ID!
@@ -2054,6 +2220,7 @@ union ListWarpDevImagesResult = ListWarpDevImagesOutput | UserFacingError
 type ListedHarnessAuthSecretsConfig {
   claudeAuthSecretName: String
   codexAuthSecretName: String
+  piAuthSecretName: String
 }
 
 type ListedHarnessConfig {
@@ -2249,6 +2416,12 @@ type LlmSpec {
   speed: Float!
 }
 
+"""How an LLM provider API key's endpoint is reached."""
+enum LlmEndpointKind {
+  """The provider's own API, at its default URL or a baseUrl override of it."""
+  NATIVE
+}
+
 type LlmUsageMetadata {
   creditMultiplier: Float
   requestMultiplier: Int! @deprecated(reason: "Use creditMultiplier instead")
@@ -2277,7 +2450,19 @@ type MCPTemplateVariable {
   key: String!
 }
 
+type PiProviderInfo {
+  id: String!
+  name: String!
+  apiKeySupported: Boolean!
+  unsupportedReason: String
+}
+
 type ManagedSecret {
+  """
+  For LLM_PROVIDER_API_KEY secrets, an optional override of the provider's default API
+  URL (for example, a proxy or regional endpoint). Not secret.
+  """
+  baseUrl: String
   createdAt: Time!
 
   """
@@ -2285,11 +2470,19 @@ type ManagedSecret {
   """
   description: String
 
+  """For LLM_PROVIDER_API_KEY secrets, how the key's endpoint is reached."""
+  endpointKind: LlmEndpointKind
+
   """The name of this secret. Secret names are unique for a given owner."""
   name: String!
 
   """The user or team who owns this secret."""
   owner: Space!
+
+  """
+  For LLM_PROVIDER_API_KEY secrets, the model provider the key authenticates against.
+  """
+  providerId: String
 
   """The kind of secret value."""
   type: ManagedSecretType!
@@ -2344,6 +2537,16 @@ type ManagedSecretDockerRegistryValue {
   username: String!
 }
 
+"""
+A managed secret value representing an AWS ECR credential backed by an IAM role. Neither
+field is secret - Warp assumes the role fresh at dispatch time rather than storing a
+password - so both are readable back in full.
+"""
+type ManagedSecretAwsEcrCredentialValue {
+  registryHost: String!
+  roleArn: String!
+}
+
 """A managed secret value representing an OpenAI API key."""
 type ManagedSecretOpenAiApiKeyValue {
   apiKey: String!
@@ -2352,6 +2555,17 @@ type ManagedSecretOpenAiApiKeyValue {
   Optional base URL for the OpenAI API. When set, the harness uses this
   instead of the provider default (e.g. for regional endpoints).
   """
+  baseUrl: String
+}
+
+"""
+A managed secret value representing an API key for a model provider. The encrypted
+value carries only providerId and apiKey; baseUrl is read from the secret's metadata
+when the value is delivered to a run.
+"""
+type ManagedSecretLlmProviderApiKeyValue {
+  providerId: String!
+  apiKey: String!
   baseUrl: String
 }
 
@@ -2370,13 +2584,15 @@ enum ManagedSecretType {
   ANTHROPIC_API_KEY
   ANTHROPIC_BEDROCK_ACCESS_KEY
   ANTHROPIC_BEDROCK_API_KEY
+  AWS_ECR_CREDENTIAL
   DOCKER_REGISTRY
   DOTENVX
   OPENAI_API_KEY
+  LLM_PROVIDER_API_KEY
   RAW_VALUE
 }
 
-union ManagedSecretValue = ManagedSecretAnthropicApiKeyValue | ManagedSecretAnthropicBedrockAccessKeyValue | ManagedSecretAnthropicBedrockApiKeyValue | ManagedSecretDockerRegistryValue | ManagedSecretOpenAiApiKeyValue | ManagedSecretRawValue
+union ManagedSecretValue = ManagedSecretAnthropicApiKeyValue | ManagedSecretAnthropicBedrockAccessKeyValue | ManagedSecretAnthropicBedrockApiKeyValue | ManagedSecretAwsEcrCredentialValue | ManagedSecretDockerRegistryValue | ManagedSecretOpenAiApiKeyValue | ManagedSecretLlmProviderApiKeyValue | ManagedSecretRawValue
 
 input ManagedSecretsInput {
   """Pagination cursor, currently unused."""
@@ -2641,6 +2857,13 @@ Used in task status messages to identify the class of error.
 See platformerrors package for the canonical definitions.
 """
 enum PlatformErrorCode {
+  """MAA server explicitly reported a terminal response stream failure."""
+  AGENT_STREAM_FAILURE
+
+  """
+  MAA response stream terminally failed because of a transport or EOF error.
+  """
+  AGENT_STREAM_NETWORK_ERROR
   """Request lacks valid authentication credentials (e.g. invalid API key)."""
   AUTHENTICATION_REQUIRED
 
@@ -2681,6 +2904,9 @@ enum PlatformErrorCode {
   """Principal lacks permission for the requested operation."""
   NOT_AUTHORIZED
 
+  """The operation is not supported for the current resource state."""
+  OPERATION_NOT_SUPPORTED
+
   """Referenced resource does not exist."""
   RESOURCE_NOT_FOUND
 
@@ -2706,6 +2932,43 @@ type PopulateMerkleTreeCacheOutput implements Response {
 }
 
 union PopulateMerkleTreeCacheResult = PopulateMerkleTreeCacheOutput | UserFacingError
+
+input PrewarmedSandboxConfigInput {
+  githubCredentialContractVersion: Int
+  sandboxId: ID!
+  supportsAgentHooks: Boolean
+  supportsDeferredRepositories: Boolean
+}
+
+union PrewarmedSandboxConfigResult = PrewarmedSandboxConfiguration | UserFacingError
+
+type PrewarmedSandboxConfiguration {
+  environmentVariables: [PrewarmedSandboxVariable!]!
+  expiresAt: Time!
+  fingerprint: String!
+  gitCredentials: [TaskGitCredential!]!
+  githubCredentialMode: GitHubCredentialMode!
+  managedSecrets: [TaskSecretEntry!]!
+  sandboxId: ID!
+  spec: PrewarmedSandboxSpec!
+}
+
+type PrewarmedSandboxSpec {
+  computerUseEnabled: Boolean!
+  deferredRepositories: [SourceRepo!]!
+  factorySkillDirs: [String!]!
+  harness: String!
+  mcpServersJson: String!
+  providers: CloudProviderClientConfigs
+  repositories: [ExecutionRepository!]!
+  setupCommands: [String!]!
+  skills: [String!]!
+}
+
+type PrewarmedSandboxVariable {
+  name: String!
+  value: String!
+}
 
 type PricingInfo {
   addonCreditsOptions: [AddonCreditsOption!]!
@@ -2849,6 +3112,18 @@ type RemoveUserFromTeamOutput implements Response {
 }
 
 union RemoveUserFromTeamResult = RemoveUserFromTeamOutput | UserFacingError
+input RemoveUserFromWorkspaceInput {
+  entrypoint: CloudObjectEventEntrypoint!
+  userUid: ID!
+  workspaceUid: ID!
+}
+
+type RemoveUserFromWorkspaceOutput implements Response {
+  responseContext: ResponseContext!
+  success: Boolean!
+}
+
+union RemoveUserFromWorkspaceResult = RemoveUserFromWorkspaceOutput | UserFacingError
 
 input RenameTeamInput {
   newName: String!
@@ -2879,6 +3154,20 @@ type RepoResult {
   status: UserRepoAuthStatus!
 }
 
+input ReportHarnessTransportInput {
+  """Why the harness fell back to a PTY. Omitted when no fallback happened."""
+  fallbackReason: HarnessTransportFallbackReason
+
+  """The transport the harness is driven over."""
+  transport: HarnessTransport!
+}
+
+type ReportHarnessTransportOutput implements Response {
+  responseContext: ResponseContext!
+}
+
+union ReportHarnessTransportResult = ReportHarnessTransportOutput | UserFacingError
+
 input RequestContext {
   clientContext: ClientContext!
   osContext: OSContext!
@@ -2888,6 +3177,12 @@ type RequestLimitInfo {
   acceptedAutosuggestionsLimit: Int! @deprecated(reason: "No longer tracked. Always returns 0.")
   acceptedAutosuggestionsSinceLastRefresh: Int! @deprecated(reason: "No longer tracked. Always returns 0.")
   embeddingGenerationBatchSize: Int!
+
+  """
+  The dollar value of requestLimit, in cents. Null for a subject billed in credits
+  rather than dollars, and when usage is unlimited.
+  """
+  includedUsageCents: Float
   isUnlimited: Boolean!
   isUnlimitedAutosuggestions: Boolean!
   isUnlimitedCodebaseIndices: Boolean!
@@ -2902,6 +3197,12 @@ type RequestLimitInfo {
   requestsUsedSinceLastRefresh: Int!
   suggestedCodeDiffsLimit: Int!
   suggestedCodeDiffsSurfacedSinceLastRefresh: Int!
+
+  """
+  The dollar value of requestsUsedSinceLastRefresh, in cents. Null for a subject billed
+  in credits rather than dollars, and when usage is unlimited.
+  """
+  usageCentsUsedSinceLastRefresh: Float
   voiceRequestLimit: Int!
   voiceRequestsUsedSinceLastRefresh: Int!
   voiceTokenLimit: Int!
@@ -3007,6 +3308,7 @@ type RunnerInstanceShape {
 enum RunnerOS {
   LINUX
   MACOS
+  WINDOWS
 }
 
 """Target CPU architecture for a runner sandbox."""
@@ -3144,6 +3446,7 @@ type RootMutation {
   deleteManagedSecret(input: DeleteManagedSecretInput!, requestContext: RequestContext!): DeleteManagedSecretResult!
   deleteObject(input: DeleteObjectInput!, requestContext: RequestContext!): DeleteObjectResult!
   deleteTeamInvite(input: DeleteTeamInviteInput!, requestContext: RequestContext!): DeleteTeamInviteResult!
+  disconnectChatGPT(requestContext: RequestContext!): DisconnectChatGPTResult!
   emptyTrash(input: EmptyTrashInput!, requestContext: RequestContext!): EmptyTrashResult!
   expireApiKey(input: ExpireApiKeyInput!, requestContext: RequestContext!): ExpireApiKeyResult!
   generateApiKey(input: GenerateApiKeyInput!, requestContext: RequestContext!): GenerateApiKeyResult!
@@ -3157,13 +3460,16 @@ type RootMutation {
   giveUpNotebookEditAccess(input: UpdateNotebookEditAccessInput!, requestContext: RequestContext!): UpdateNotebookEditAccessResult!
   grabNotebookEditAccess(input: UpdateNotebookEditAccessInput!, requestContext: RequestContext!): UpdateNotebookEditAccessResult!
   issueTaskIdentityToken(input: IssueTaskIdentityTokenInput!, requestContext: RequestContext!): IssueTaskIdentityTokenResult!
+  joinTeamInWorkspace(input: JoinTeamInWorkspaceInput!, requestContext: RequestContext!): JoinTeamInWorkspaceResult!
   joinTeamWithTeamDiscovery(input: JoinTeamWithTeamDiscoveryInput!, requestContext: RequestContext!): JoinTeamWithTeamDiscoveryResult!
+  joinWorkspaceFromDiscovery(input: JoinWorkspaceFromDiscoveryInput!, requestContext: RequestContext!): JoinWorkspaceFromDiscoveryResult!
 
   """The API for leaving an object as a direct guest or link-shared."""
   leaveObject(input: LeaveObjectInput!, requestContext: RequestContext!): LeaveObjectResult!
   mintCustomToken(requestContext: RequestContext!): MintCustomTokenResult!
   moveObject(input: MoveObjectInput!, requestContext: RequestContext!): MoveObjectResult!
   populateMerkleTreeCache(input: PopulateMerkleTreeCacheInput!, requestContext: RequestContext!): PopulateMerkleTreeCacheResult!
+  prewarmedSandboxConfig(input: PrewarmedSandboxConfigInput!, requestContext: RequestContext!): PrewarmedSandboxConfigResult!
   provideNegativeFeedbackResponseForAiConversation(input: ProvideNegativeFeedbackResponseForAiConversationInput!, requestContext: RequestContext!): RequestsRefundedResult!
   purchaseAddonCredits(input: PurchaseAddonCreditsInput!, requestContext: RequestContext!): PurchaseAddonCreditsResult!
 
@@ -3179,7 +3485,20 @@ type RootMutation {
   in v2. Usage of the `leaveTeam` mutation in v1 will eventually be removed.
   """
   removeUserFromTeam(input: RemoveUserFromTeamInput!, requestContext: RequestContext!): RemoveUserFromTeamResult!
+  removeUserFromWorkspace(input: RemoveUserFromWorkspaceInput!, requestContext: RequestContext!): RemoveUserFromWorkspaceResult!
   renameTeam(input: RenameTeamInput!, requestContext: RequestContext!): RenameTeamResult!
+
+  """
+  Reports the transport the agent process drives the run's third-party harness over.
+  The agent sends it at harness start, after deciding whether it can honour the ACP
+  transport the run was dispatched with or must fall back to a terminal, so the platform
+  delivers follow-ups the way the harness can receive them. It retries transient failures;
+  a report that matches the recorded transport is a no-op.
+  
+  This may only be called from within a cloud agent execution environment, with the
+  current execution's credentials.
+  """
+  reportHarnessTransport(input: ReportHarnessTransportInput!, requestContext: RequestContext!): ReportHarnessTransportResult!
   resetInviteLinks(input: ResetInviteLinksInput!, requestContext: RequestContext!): ResetInviteLinksResult!
   sendOnboardingSurveyResponses(input: SendOnboardingSurveyResponsesInput!, requestContext: RequestContext!): SendOnboardingSurveyResponsesResult!
   sendReferralInviteEmails(input: SendReferralInviteEmailsInput!, requestContext: RequestContext!): SendReferralInviteEmailsResult!
@@ -3190,6 +3509,7 @@ type RootMutation {
   setTeamMemberRole(input: SetTeamMemberRoleInput!, requestContext: RequestContext!): SetTeamMemberRoleResult!
   setUserIsOnboarded(requestContext: RequestContext!): SetUserIsOnboardedResult!
   shareBlock(input: ShareBlockInput!, requestContext: RequestContext!): ShareBlockResult!
+  startChatGPTLink(requestContext: RequestContext!, continueUrl: String!): StartChatGPTLinkResult!
   stripeBillingPortal(input: StripeBillingPortalInput!, requestContext: RequestContext!): StripeBillingPortalResult!
   transferGenericStringObjectOwner(input: TransferGenericStringObjectOwnerInput!, requestContext: RequestContext!): TransferGenericStringObjectOwnerResult!
   transferNotebookOwner(input: TransferNotebookOwnerInput!, requestContext: RequestContext!): TransferNotebookOwnerResult!
@@ -3260,6 +3580,13 @@ type RootQuery {
 
   """Retrieve execution history for a scheduled agent."""
   scheduledAgentHistory(input: ScheduledAgentHistoryInput!, requestContext: RequestContext!): ScheduledAgentHistoryResult!
+
+  """
+  Authorizes a REMOTE-2661 debug agent prompt against a retained environment-setup-failure
+  session. Requires a workload token scoped to the run, so only the sandbox itself (not an
+  arbitrary caller) can invoke it.
+  """
+  setupFailureDebugAuthorization(input: SetupFailureDebugAuthorizationInput!, requestContext: RequestContext!): SetupFailureDebugAuthorizationResult!
   simpleIntegrations(input: SimpleIntegrationsInput!, requestContext: RequestContext!): SimpleIntegrationsResult!
   suggestCloudEnvironmentImage(input: SuggestCloudEnvironmentImageInput!, requestContext: RequestContext!): SuggestCloudEnvironmentImageResult!
 
@@ -3490,6 +3817,25 @@ type SetTeamMemberRoleOutput implements Response {
 
 union SetTeamMemberRoleResult = SetTeamMemberRoleOutput | UserFacingError
 
+"""
+Authorizes a REMOTE-2661 debug agent prompt against a retained environment-setup-failure
+session. Called by the sharer (the retained agent process) with its own workload token to
+verify a no-token prompt's originating participant before honoring it, since the sharer's
+local task-eligibility view cannot authenticate who is actually asking.
+"""
+input SetupFailureDebugAuthorizationInput {
+  participantFirebaseUid: String!
+  taskId: ID!
+  workloadToken: String!
+}
+
+type SetupFailureDebugAuthorizationOutput implements Response {
+  authorized: Boolean!
+  responseContext: ResponseContext!
+}
+
+union SetupFailureDebugAuthorizationResult = SetupFailureDebugAuthorizationOutput | UserFacingError
+
 type SetUserIsOnboardedOutput implements Response {
   responseContext: ResponseContext!
 }
@@ -3676,6 +4022,10 @@ merged with other task queries into a single unified query.
 type Task {
   """List of attachments (images/files) associated with this task."""
   attachments: [TaskAttachment!]!
+  """
+  Configuration for the active cloud execution. Requires the execution's workload token.
+  """
+  executionConfig(executionId: ID!, supportsDeferredRepositories: Boolean = false, supportsAgentHooks: Boolean = false): ExecutionConfiguration!
 
   """The ID of the task."""
   taskId: ID!
@@ -3701,6 +4051,8 @@ type TaskAttachment {
 
 """A set of git credentials for a single hosting provider."""
 type TaskGitCredential {
+  expiresAt: Time
+  repositoryScope: String
   """
   The email address associated with the token, if available.
   Null for service-account (installation) tokens.
@@ -3722,6 +4074,12 @@ type TaskGitCredential {
 
 """Input for the taskGitCredentials query."""
 input TaskGitCredentialsInput {
+  githubCredentialContractVersion: Int
+  """
+  Refresh only these providers. Omitted or null refreshes all providers.
+  Requires acceptsPartialRefresh and a nonempty list.
+  """
+  providers: [TaskGitCredentialProvider!]
   """
   Whether the caller can handle a response in which one forge's credential is
   fresh and another's failed. A caller that opts in must merge the fresh
@@ -3732,6 +4090,7 @@ input TaskGitCredentialsInput {
   partial list.
   """
   acceptsPartialRefresh: Boolean
+  useFactoryRepositories: Boolean
 
   """The ID of the task."""
   taskId: ID!
@@ -3741,18 +4100,20 @@ input TaskGitCredentialsInput {
 }
 
 type TaskGitCredentialsOutput implements Response {
+  githubCredentialMode: GitHubCredentialMode!
   """The credentials that were freshly issued this cycle, one per host."""
   credentials: [TaskGitCredential!]!
 
   """
   Hosts whose credential could not be issued this cycle because of a
   transient failure. A host listed here is distinct from one that is simply
-  absent from `credentials`: absent means the run has no repository on that
-  forge and needs no credential there, while listed here means the caller
-  should keep whatever it already has for that host and retry.
+  absent from `credentials`: for a requested provider, absence means no
+  credential is available, while listed here means issuance failed.
+  Providers not requested must be left unchanged.
 
   Only populated when the request set `acceptsPartialRefresh`; otherwise a
-  failure on any forge fails the whole request.
+  failure on any forge fails the whole request. An explicit providers list
+  preserves these failures even when no selected provider succeeds.
   """
   failedHosts: [String!]!
   responseContext: ResponseContext!
@@ -4008,6 +4369,7 @@ type Tier {
   anyoneWithLinkSharingPolicy: AnyoneWithLinkSharingPolicy
   byoApiKeyPolicy: ByoApiKeyPolicy
   byoEndpointPolicy: ByoEndpointPolicy
+  chargeUnit: ChargeUnit!
   cloudConversationStoragePolicy: CloudConversationStoragePolicy
   codebaseContextPolicy: CodebaseContextPolicy
   customLlmPolicy: CustomLlmPolicy
@@ -4218,6 +4580,14 @@ input UpdateAgentTaskInput {
   conversationId: ID
 
   """
+  True while a REMOTE-2661 debug turn is actively pinning the post-failure debug window's idle
+  timer; false once the turn ends and the timer re-arms. Display-only, and deliberately separate
+  from statusMessage and sessionDebugUntil for the same reason: a pin/unpin update must not
+  overwrite the failure text or move the deadline.
+  """
+  debugAgentActive: Boolean
+
+  """
   When a failed run's shared session stops being held open for debugging.
   
   The agent process owns that window and reports this on arm and on each refresh, so the
@@ -4280,6 +4650,11 @@ type UpdateGenericStringObjectOutput implements Response {
 union UpdateGenericStringObjectResult = UpdateGenericStringObjectOutput | UserFacingError
 
 input UpdateManagedSecretInput {
+  """
+  New base URL for an LLM_PROVIDER_API_KEY secret. If omitted, the base URL is not
+  changed. If set to null, the provider's default API URL is used.
+  """
+  baseUrl: String
   description: String
   encryptedValue: String
   name: String!
@@ -4515,9 +4890,11 @@ input UsageBasedPricingSettingsInput {
 
 type UsageEntry {
   attributedTeamUid: String
-  costCents: Int!
+  costCents: Int! @deprecated(reason: "Use costCentsExact instead to avoid integer rounding")
+  costCentsExact: Float!
   costType: AICreditsUsageAndCostType!
-  creditsUsed: Int!
+  creditsUsed: Int! @deprecated(reason: "Use creditsUsedExact instead to avoid integer rounding")
+  creditsUsedExact: Float!
   subjectDisplayName: String
   subjectType: AICreditsUsageAndCostSubjectType!
   subjectUid: String
@@ -4567,6 +4944,11 @@ type User {
   billingMetadata: BillingMetadata
   blocks: [Block!]!
   bonusGrants: [BonusGrant!]!
+
+  """
+  The ChatGPT account linked to this user, or null when none is linked.
+  """
+  chatgptConnection: ChatGPTConnection
   completedOzWebappFtue: Boolean!
 
   """
@@ -4578,6 +4960,7 @@ type User {
   """
   conversationUsage(days: Int, lastUpdatedEndTimestamp: Time, limit: Int): [ConversationUsage!]!
   discoverableTeams: [DiscoverableTeamData!]!
+  discoverableWorkspaces: [DiscoverableWorkspaceData!]!
 
   """
   We differentiate between `null` and `[]` here:
@@ -4631,6 +5014,73 @@ known type that the client can query even if new types of errors that implement
 type UserFacingError implements Response {
   error: UserFacingErrorInterface!
   responseContext: ResponseContext!
+}
+
+"""
+A structured platform error. Internal causes are only exposed through info.debug in dogfood.
+"""
+type PlatformError implements UserFacingErrorInterface {
+  detail: String
+  info: PlatformErrorInfo!
+  message: String!
+}
+
+"""
+Machine-readable platform error information shared by server- and client-sourced errors.
+Debug information is only exposed in dogfood environments.
+"""
+type PlatformErrorInfo {
+  code: PlatformErrorCode!
+  debug: String
+  detail: String
+  errorMessage: String!
+  httpStatus: Int!
+  isUserError: Boolean!
+  metadata: [PlatformErrorMetadata!]!
+  metricsCategory: String!
+  retryable: Boolean!
+  traceId: String
+  userFacingMessages: [PlatformErrorMessage!]!
+}
+
+input PlatformErrorInput {
+  code: PlatformErrorCode!
+  debug: String
+  detail: String
+  errorMessage: String
+  httpStatus: Int
+  isUserError: Boolean
+  metadata: [PlatformErrorMetadataInput!]!
+  metricsCategory: String
+  retryable: Boolean!
+  traceId: String
+  userFacingMessages: [PlatformErrorMessageInput!]
+}
+
+type PlatformErrorMessage {
+  format: PlatformErrorMessageFormat!
+  message: String!
+}
+
+enum PlatformErrorMessageFormat {
+  MARKDOWN
+  PLAIN_TEXT
+  SLACK_MRKDWN
+}
+
+input PlatformErrorMessageInput {
+  format: PlatformErrorMessageFormat!
+  message: String!
+}
+
+type PlatformErrorMetadata {
+  key: String!
+  value: String!
+}
+
+input PlatformErrorMetadataInput {
+  key: String!
+  value: String!
 }
 
 """
@@ -4786,11 +5236,13 @@ type Workspace {
   hasBillingHistory is the equivalent of the v1 hasBillingHistory field in the Team type.
   """
   hasBillingHistory: Boolean!
+  includedUsageInfo: WorkspaceIncludedUsageInfo
   inviteLinkDomainRestrictions: [InviteLinkDomainRestriction!]!
   isEligibleForDiscovery: Boolean!
   memberSpendLimits: [MemberSpendLimit!]
   members: [WorkspaceMember!]!
   name: String!
+  openTeams: [DiscoverableTeamData!]!
   pendingEmailInvites: [EmailInvite!]!
 
   """
@@ -4802,6 +5254,17 @@ type Workspace {
   teams: [Team!]!
   totalRequestsUsedSinceLastRefresh: Int!
   uid: ID!
+}
+
+"""
+A plan's shared workspace allowance for the current monthly AI cycle.
+"""
+type WorkspaceIncludedUsageInfo {
+  includedUsageCredits: Float!
+  usageCreditsUsedSinceLastRefresh: Float!
+  includedUsageCents: Float!
+  usageCentsUsedSinceLastRefresh: Float!
+  nextRefreshTime: Time!
 }
 
 type WorkspaceMember {
@@ -4818,10 +5281,21 @@ type WorkspaceMember {
 }
 
 type WorkspaceMemberUsageInfo {
+  """
+  The dollar value of requestLimit, in cents. Null for a workspace billed in credits
+  rather than dollars, and when usage is unlimited.
+  """
+  includedUsageCents: Float
   isRequestLimitProrated: Boolean!
   isUnlimited: Boolean!
   requestLimit: Int!
   requestsUsedSinceLastRefresh: Int!
+
+  """
+  The dollar value of requestsUsedSinceLastRefresh, in cents. Null for a workspace billed
+  in credits rather than dollars, and when usage is unlimited.
+  """
+  usageCentsUsedSinceLastRefresh: Float
 }
 
 type WorkspaceSettings {
@@ -4852,4 +5326,164 @@ enum WriteToPtyAutonomyValue {
   ALWAYS_ASK
   ASK_ON_FIRST_WRITE
   RESPECT_USER_SETTING
+}
+
+
+type ExecutionSkillSpec {
+  spec: String!
+}
+
+enum ExecutionRepositoryRefType {
+  COMMIT_SHA
+  BRANCH
+}
+
+type ExecutionRepositoryRef {
+  type: ExecutionRepositoryRefType!
+  value: String!
+}
+
+
+type ExecutionRepository {
+  forge: CodeForge!
+  owner: String!
+  name: String!
+  ref: ExecutionRepositoryRef
+  cloneFrom: SourceRepo
+  preserveOrigin: Boolean!
+  expectedSha: String
+}
+
+
+enum SessionSharingSubjectType {
+  TEAM
+  USER_EMAIL
+  PUBLIC
+}
+
+enum SessionSharingAccessLevel {
+  VIEW
+  EDIT
+}
+
+type SessionSharingAclSpec {
+  subjectType: SessionSharingSubjectType!
+  email: String
+  access: SessionSharingAccessLevel!
+}
+
+type GCPCloudProviderClientConfig {
+  projectNumber: String!
+  poolId: String!
+  providerId: String!
+  serviceAccountEmail: String
+}
+
+type AWSCloudProviderClientConfig {
+  roleArn: String!
+}
+
+type CloudProviderClientConfigs {
+  gcp: GCPCloudProviderClientConfig
+  aws: AWSCloudProviderClientConfig
+}
+
+type AWSBedrockInferenceClientConfig {
+  roleArn: String!
+  region: String
+}
+
+type InferenceProviderClientConfigs {
+  awsBedrock: AWSBedrockInferenceClientConfig
+}
+
+type ExecutionConfiguration {
+  taskId: ID!
+  executionId: ID!
+  conversationId: ID
+  parentRunId: ID
+  """The owning team's UID, or null for a personal task."""
+  teamId: ID
+  harness: AgentHarness!
+  modelId: String
+  reasoningLevel: String
+  profileId: ID
+  mcpServersJson: String!
+  skills: [ExecutionSkillSpec!]!
+  factorySkillDirs: [String!]!
+  computerUseEnabled: Boolean!
+  computerUseModelId: String
+  inferenceProviders: InferenceProviderClientConfigs
+  repositories: [ExecutionRepository!]!
+  deferredRepositories: [ExecutionRepository!]!
+  setupCommands: [String!]!
+  providers: CloudProviderClientConfigs
+  sessionSharingAcls: [SessionSharingAclSpec!]!
+  skipInitialTurn: Boolean!
+  idleOnCompleteSeconds: Int
+  idleOnFailSeconds: Int
+  snapshotDisabled: Boolean!
+  """
+  Hook directories the run loads: the agent's entries first, then the
+  factory's, each in declared order. Duplicates are not merged.
+  """
+  agentHookSources: [AgentHookSource!]!
+}
+
+"""
+The file format of an agent hook directory. It selects how the client reads the
+directory.
+"""
+enum AgentHookFormat {
+  CURSOR
+}
+
+"""The part of the factory configuration that declared an agent hook source."""
+enum AgentHookLevel {
+  FACTORY
+  AGENT
+}
+
+"""
+What a run with no human does after a hook from this source asks for approval.
+The tool call is denied either way.
+"""
+enum AgentHookOnAsk {
+  DENY
+  FAIL_RUN
+}
+
+type AgentHookRepository {
+  forge: CodeForge!
+  owner: String!
+  name: String!
+}
+
+type AgentHookSource {
+  format: AgentHookFormat!
+  """
+  The repository that contains the hook directory, or null when path is an
+  absolute directory on the worker.
+  """
+  repository: AgentHookRepository
+  """
+  A directory relative to the repository root when repository is set;
+  otherwise an absolute directory on the worker.
+  """
+  path: String!
+  level: AgentHookLevel!
+  strict: Boolean!
+  onAsk: AgentHookOnAsk!
+}
+
+enum CodeForge {
+  GITHUB
+  GITLAB
+  AZURE_DEVOPS
+}
+
+type SourceRepo {
+  codeForge: CodeForge!
+  owner: String!
+  repo: String!
 }

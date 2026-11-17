@@ -13,7 +13,11 @@ pub struct UpsertedRunner {
 #[cfg_attr(not(target_family = "wasm"), async_trait)]
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
 pub trait FactoryClient: 'static + Send + Sync {
-    async fn get_runners(&self, sort_by: Option<RunnerSortBy>) -> Result<Vec<Runner>>;
+    async fn get_runners(
+        &self,
+        sort_by: Option<RunnerSortBy>,
+        _team_scope: Option<crate::server::team_scope::RequestTeamScope>,
+    ) -> Result<Vec<Runner>>;
 
     async fn upsert_runner(&self, input: UpsertRunnerInput) -> Result<UpsertedRunner>;
 
@@ -23,7 +27,11 @@ pub trait FactoryClient: 'static + Send + Sync {
 #[cfg_attr(not(target_family = "wasm"), async_trait)]
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
 impl FactoryClient for ServerApi {
-    async fn get_runners(&self, sort_by: Option<RunnerSortBy>) -> Result<Vec<Runner>> {
+    async fn get_runners(
+        &self,
+        sort_by: Option<RunnerSortBy>,
+        _team_scope: Option<crate::server::team_scope::RequestTeamScope>,
+    ) -> Result<Vec<Runner>> {
         let _ = sort_by;
         Err(anyhow!("Factory is unavailable in this product profile"))
     }

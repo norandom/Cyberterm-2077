@@ -14,7 +14,9 @@ use warpui::r#async::Timer;
 use crate::ai::agent::ReceivedMessageInput;
 use crate::ai::ambient_agents::AmbientAgentTaskId;
 use crate::server::server_api::ServerApi;
-use crate::server::server_api::ai::{AIClient, AgentRunEvent, ReadAgentMessageResponse};
+use crate::server::server_api::ai::{
+    AIClient, AgentRunEvent, AgentRunEventKind, ReadAgentMessageResponse,
+};
 #[cfg(not(target_family = "wasm"))]
 use crate::server::server_api::presigned_upload::HttpStatusError;
 
@@ -95,7 +97,7 @@ impl MessageHydrator {
         event: &AgentRunEvent,
         recipient_run_id: &str,
     ) -> Option<ReceivedMessageInput> {
-        if event.event_type != "new_message" || event.run_id != recipient_run_id {
+        if event.kind != AgentRunEventKind::NewMessage || event.run_id != recipient_run_id {
             return None;
         }
 
@@ -109,6 +111,15 @@ impl MessageHydrator {
                 return None;
             }
         };
+        // Already delivered by another route; surfacing it again would repeat a turn.
+        if message.delivered_at.is_some() {
+            log::debug!(
+                "Skipping already-delivered agent message {} for event sequence {}",
+                message.message_id,
+                event.sequence
+            );
+            return None;
+        }
         if message.body.is_empty() {
             log::warn!(
                 "Hydrated empty-body agent message: message_id={} event_sequence={} recipient_run_id={} sender_run_id={} subject={:?} task_id={:?}",

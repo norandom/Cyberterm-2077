@@ -45,6 +45,7 @@
 //! best-effort cleanup that should continue after an unrelated panic.
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, SystemTime};
 
@@ -65,12 +66,16 @@ use tracing::subscriber;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt as _;
 use url::{Host, Url};
-use warp_managed_secrets::client::ManagedSecretsClient;
 use warpui::AppContext;
 
 use super::Initialization;
-use super::cloud_agent_auth::{self, AuthContext};
+use super::child_process::ChildProcessTracingConfig;
+use super::cloud_agent_auth::{
+    self, AssignmentCredential, AuthContext, CLOUD_AGENT_OTLP_TOKEN,
+    CLOUD_AGENT_OTLP_TOKEN_EXPIRES_AT,
+};
 use crate::channel::ChannelState;
+use crate::server::server_api::managed_secrets::AppManagedSecretsClient;
 use crate::tracing::install_no_subscriber;
 
 /// The tag used to mark spans related to cloud agents, which we use to filter out
@@ -88,7 +93,13 @@ const EXPORT_FAILURE_LOG_INTERVAL: Duration = Duration::from_secs(60);
 /// The exporter is built once during [`init`], while the stored context later starts dynamic
 /// credential refresh after authenticated application services become available, and this static
 /// remains unset for processes that did not opt in.
-static AUTH_CONTEXT: OnceLock<AuthContext> = OnceLock::new();
+static AUTH_CONTEXT: OnceLock<ParentTracingContext> = OnceLock::new();
+
+struct ParentTracingContext {
+    endpoint: String,
+    auth: AuthContext,
+    provider: SdkTracerProvider,
+}
 
 /// Installs the native tracing subscriber and optional cloud-agent OTLP exporter.
 ///
@@ -97,13 +108,6 @@ static AUTH_CONTEXT: OnceLock<AuthContext> = OnceLock::new();
 /// is installed so tracing instrumentation remains safe without producing output or partially
 /// initializing export.
 pub fn init() -> anyhow::Result<Initialization> {
-    // INFO is the default because this is a global subscriber and DEBUG-level application spans
-    // would otherwise create substantial work even though only marked cloud-agent spans are
-    // exported. RUST_LOG can still override this when deeper tracing is needed.
-    let env_filter = EnvFilter::builder()
-        .with_default_directive(tracing::Level::INFO.into())
-        .from_env_lossy();
-
     let Some(base_endpoint) = std::env::var(CLOUD_AGENT_OTLP_ENDPOINT)
         .ok()
         .filter(|endpoint| !endpoint.trim().is_empty())
@@ -116,8 +120,51 @@ pub fn init() -> anyhow::Result<Initialization> {
         return Ok(Initialization::default());
     };
 
+    let initialization = init_exporter(base_endpoint.trim(), &auth_context)?;
+    if let Some(provider) = &initialization.provider {
+        let _ = AUTH_CONTEXT.set(ParentTracingContext {
+            endpoint: base_endpoint.trim().to_owned(),
+            auth: auth_context,
+            provider: provider.clone(),
+        });
+    }
+    Ok(initialization)
+}
+
+pub(super) fn child_process_snapshot() -> Option<ChildProcessTracingConfig> {
+    let context = AUTH_CONTEXT.get()?;
+    Some(ChildProcessTracingConfig::capture(
+        context.endpoint.clone(),
+        context.auth.snapshot()?,
+    ))
+}
+
+pub(super) fn init_child_process(
+    config: Option<ChildProcessTracingConfig>,
+) -> anyhow::Result<(Initialization, OtelContext)> {
+    if let Some(config) = config {
+        let parent_context = config.parent_context();
+        if let Ok(auth_context) = AuthContext::from_snapshot(config.credential) {
+            return init_exporter(&config.endpoint, &auth_context)
+                .map(|initialization| (initialization, parent_context));
+        }
+    }
+    install_no_subscriber()?;
+    Ok((Initialization::default(), OtelContext::new()))
+}
+
+fn init_exporter(
+    base_endpoint: &str,
+    auth_context: &AuthContext,
+) -> anyhow::Result<Initialization> {
+    // INFO is the default because this is a global subscriber and DEBUG-level application spans
+    // would otherwise create substantial work even though only marked cloud-agent spans are
+    // exported. RUST_LOG can still override this when deeper tracing is needed.
+    let env_filter = EnvFilter::builder()
+        .with_default_directive(tracing::Level::INFO.into())
+        .from_env_lossy();
     let shutdown_timeout = export_timeout();
-    let provider = match build_provider(base_endpoint.trim(), &auth_context) {
+    let provider = match build_provider(base_endpoint, auth_context) {
         Ok(provider) => provider,
         Err(err) => {
             install_no_subscriber()?;
@@ -129,7 +176,6 @@ pub fn init() -> anyhow::Result<Initialization> {
             });
         }
     };
-    let _ = AUTH_CONTEXT.set(auth_context);
 
     let active_spans = ActiveSpanRegistry::default();
     let tracer =
@@ -199,10 +245,48 @@ fn build_provider(
 ///
 /// Processes that did not opt in with both an endpoint and valid dispatch credential have no
 /// retained [`AUTH_CONTEXT`] and remain no-ops here.
-pub(super) fn start_auth_refresh(client: Arc<dyn ManagedSecretsClient>, ctx: &mut AppContext) {
+pub(super) fn start_auth_refresh(client: Arc<AppManagedSecretsClient>, ctx: &mut AppContext) {
     if let Some(auth_context) = AUTH_CONTEXT.get() {
-        cloud_agent_auth::start_refresh_coordinator(auth_context.clone(), client, ctx);
+        cloud_agent_auth::start_refresh_coordinator(auth_context.auth.clone(), client, ctx);
     }
+}
+
+pub(super) fn assign_run_credentials(
+    runtime_env: &mut HashMap<String, String>,
+    client: Arc<AppManagedSecretsClient>,
+    ctx: &mut AppContext,
+) {
+    let disable = [
+        CLOUD_AGENT_OTLP_ENDPOINT,
+        CLOUD_AGENT_OTLP_TOKEN,
+        CLOUD_AGENT_OTLP_TOKEN_EXPIRES_AT,
+    ]
+    .iter()
+    .all(|key| runtime_env.get(*key).is_some_and(String::is_empty));
+    // Scrub assignment secrets even when this process never enabled tracing.
+    let credential = AssignmentCredential::take(runtime_env);
+    let Some(context) = AUTH_CONTEXT.get() else {
+        log::debug!("Cloud-agent OTLP assignment skipped: exporter is inactive");
+        return;
+    };
+    if disable {
+        context.auth.disable();
+        cloud_agent_auth::stop_refresh_coordinator(&context.auth, ctx);
+        log::info!("Cloud-agent OTLP export disabled by assignment policy");
+        return;
+    }
+    let credential = match credential {
+        Ok(credential) => credential,
+        Err(err) => {
+            log::warn!("Cloud-agent OTLP assignment retained its previous credential: {err:#}");
+            return;
+        }
+    };
+    if let Err(err) = context.auth.assign_run(credential, &context.provider) {
+        log::warn!("Cloud-agent OTLP assignment retained its previous credential: {err:#}");
+        return;
+    }
+    cloud_agent_auth::restart_refresh_coordinator(context.auth.clone(), client, ctx);
 }
 
 /// Converts the configured OTLP base URL into the HTTP/protobuf traces endpoint.

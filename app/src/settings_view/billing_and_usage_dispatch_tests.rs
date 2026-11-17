@@ -7,6 +7,7 @@ fn workspace_with_customer_type(customer_type: CustomerType) -> Workspace {
         name: "test".to_string(),
         stripe_customer_id: None,
         teams: vec![],
+        open_teams: vec![],
         billing_metadata: BillingMetadata {
             customer_type,
             ..Default::default()
@@ -22,6 +23,19 @@ fn workspace_with_customer_type(customer_type: CustomerType) -> Workspace {
         members: vec![],
         total_requests_used_since_last_refresh: 0,
     }
+}
+
+#[test]
+fn scale_routes_to_v2_without_personal_plan_upgrade_offers() {
+    let workspace = workspace_with_customer_type(CustomerType::Scale);
+    assert!(BillingAndUsageDispatchView::workspace_uses_v2(Some(
+        &workspace
+    )));
+    assert!(workspace.billing_metadata.is_on_scale_plan());
+    assert!(!workspace.billing_metadata.can_upgrade_to_build_plan());
+    assert!(!workspace.billing_metadata.can_upgrade_to_build_max_plan());
+    let build = workspace_with_customer_type(CustomerType::Build);
+    assert!(!build.billing_metadata.is_on_scale_plan());
 }
 
 #[test]

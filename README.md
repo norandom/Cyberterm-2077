@@ -17,44 +17,42 @@ Warpeer never sends telemetry or crash reports, does not auto-update, does not r
 server, and does not require sign-in. It stores its data in its own `.warpeer` and application
 support directories, separate from Warp.
 
-## Windows and Linux builds (this fork)
+## Desktop builds
 
-This fork adds GitHub Actions builds for Intel/AMD x86-64 Windows and Linux.
-Download the platform artifact from a successful [Desktop builds run](https://github.com/norandom/warpeer/actions/workflows/build-desktop.yml).
-Each artifact contains a portable archive and its SHA-256 checksum. Extract the
-whole archive, then run `warpeer.exe` on Windows or `./warpeer` on Linux.
-Windows builds are unsigned. Linux builds target Ubuntu 24.04 (glibc 2.39 or newer)
-and need a graphical session, fontconfig, ALSA, X11/Wayland and a working GPU driver.
-These platforms are experimental until validated on real desktops.
+This fork tracks [Warp upstream](https://github.com/warpdotdev/warp) directly,
+while preserving Warpeer's terminal-only product profile. The current integration
+includes Warp through `0f81fad401df526e440083f95efa287a2e02f5b3` (2026-11-17).
 
-The workflow also supports manual runs. Build locally with Rust 1.92.0 and the
-native dependencies listed in `.github/workflows/build-desktop.yml`:
+GitHub Actions builds Intel/AMD x86-64 Windows and Linux and Apple Silicon macOS.
+Download artifacts from a successful [Desktop builds run](https://github.com/norandom/warpeer/actions/workflows/build-desktop.yml).
+Each artifact includes a SHA-256 checksum. Extract the whole archive, then run
+`warpeer.exe` on Windows or `./warpeer` on Linux. On macOS, open the DMG and copy
+Warpeer to Applications. The macOS app is ad-hoc signed, not notarized; Windows
+builds are unsigned. Linux builds target Ubuntu 24.04 (glibc 2.39 or newer) and
+need a graphical session, fontconfig, ALSA, X11/Wayland and a working GPU driver.
+
+## Local runbooks
+
+Use **Add local runbook folder** and **Browse local runbooks** in the command
+palette to open Markdown documents from your own folders. Shell blocks have an
+explicit Run action. There is no account or synchronization requirement.
+See [local runbooks](docs/local-runbooks.md) for configuration and scan limits.
+
+## Build from source
+
+The toolchain is pinned in `rust-toolchain.toml` (Rust 1.100.0). Native build
+dependencies are listed in `.github/workflows/build-desktop.yml`; Linux users
+with Nix can enter the provided development environment with `nix develop`.
 
 ```sh
 CARGO_FULL_PROFILE=release-desktop CARGO_BIN_NAME=warpeer WARP_APP_NAME=Warpeer \
   cargo build --locked -p warp --bin warpeer --no-default-features --features warpeer --profile release-desktop
-python script/warpeer/package-desktop.py linux # or windows
+python3 script/warpeer/package-desktop.py linux # or windows / macos
 ```
 
-The desktop profile disables LTO to reduce CI memory use. It uses the same
-terminal-only Warpeer features as upstream, with no login or trial mode.
-
-## Download
-
-Get the notarized macOS disk image from
-[Releases](https://github.com/imatrixme/warpeer.desktop/releases).
-
-## Build from source
-
-Warpeer is currently developed and tested on macOS.
-
-```sh
-./script/bootstrap --skip-common-skills
-./script/run-warpeer            # debug build
-./script/warpeer/build-dmg      # ad-hoc signed DMG in build/warpeer/
-```
-
-Before sending changes, check the product profile:
+The desktop profile disables LTO to reduce build memory use. It uses the
+terminal-only Warpeer features, with no login or trial mode. Before sending
+changes, check the product profile:
 
 ```sh
 ./script/verify-warpeer-profile

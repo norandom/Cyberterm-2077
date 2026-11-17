@@ -1,0 +1,36 @@
+# Local Markdown runbooks
+
+Open the command palette and choose **Add local runbook folder**. Choose a folder
+containing `.md` or `.markdown` documents, then choose **Browse local runbooks**.
+Repeat Add to include more folders. Subfolders are included and paths distinguish
+files with the same name. Opening a result displays the existing Markdown
+notebook viewer. Use a shell block's Run button when you want to execute it;
+browsing and opening documents never runs their commands.
+
+````markdown
+# Inspect the working tree
+
+Check changes before deploying:
+
+```sh
+ git status --short
+```
+````
+
+Existing Markdown files stay in their original folders.
+The viewer's source/edit control opens the same file in the editor.
+
+Folders are stored in your local `settings.toml`:
+
+```toml
+[runbooks]
+folders = ["~/Runbooks", "/absolute/path/to/project/operations"]
+```
+
+Edit this list to remove or reorder folders. Relative paths other than `~/` are
+ignored. Folder contents are refreshed on search; missing folders are skipped.
+Hidden subdirectories and nested symbolic links are skipped. Scans are bounded
+to 20,000 directory entries and 16 levels; search shows up to 250 matches. For
+large repositories, choose the documentation subfolder instead of the whole tree.
+
+This feature does not enable Warp Drive, YAML workflows, accounts, or cloud sync.

@@ -127,6 +127,8 @@ pub enum AutoCloudHandoffTrigger {
 
 #[derive(Debug, Clone)]
 pub enum WorkspaceAction {
+    #[cfg(all(feature = "warpeer", feature = "local_fs"))]
+    AddLocalRunbookFolder,
     ActivateTab(usize),
     ActivatePrevTab,
     ActivateNextTab,
@@ -164,25 +166,14 @@ pub enum WorkspaceAction {
     RenamePane(PaneViewLocator),
     ResetPaneName(PaneViewLocator),
     RenameActiveTab,
-    /// Renames the focused pane in the active tab. Mirrors `RenameActiveTab`
-    /// so the action is reachable from the binding registry / Command Palette
-    /// (see #9351). The context-menu path keeps using `RenamePane(locator)`.
     RenameActivePane,
     SetActiveTabName(String),
     CycleActiveTabColor,
-    /// Sets the manual color override for the active tab.
-    ///
-    /// - `Color(_)` — apply that color.
-    /// - `Cleared` — explicitly clear (suppresses any directory default).
-    /// - `Unset` — remove the manual override (lets the directory default apply, if any).
     SetActiveTabColor(SelectedTabColor),
     ToggleTabRightClickMenu {
         tab_index: usize,
         anchor: TabContextMenuAnchor,
     },
-    /// Toggles the multi-tab selection right-click menu.
-    /// Dispatched by the UI when the right-clicked tab is part of a multi-tab
-    /// selection (cmd-click or shift-click).
     ToggleTabSelectionRightClickMenu {
         tab_index: usize,
         anchor: TabContextMenuAnchor,
@@ -210,9 +201,6 @@ pub enum WorkspaceAction {
     ToggleTabGroupCollapsed(TabGroupId),
     /// Opens an inline editor over the given group's header for renaming.
     RenameTabGroup(TabGroupId),
-    /// Cancels any active rename (tab, pane, or group) without committing the
-    /// new name. Dispatched when clicking on the vtab panel background while a
-    /// rename editor is open.
     CancelActiveRename,
     /// Creates a new tab group containing the tab at the given index.
     NewTabGroupFromTab(usize),
@@ -233,8 +221,7 @@ pub enum WorkspaceAction {
     ToggleTabMultiSelection {
         locator: PaneViewLocator,
     },
-    /// Clears the tab multi-selection. Dispatched from the UI when the user takes
-    /// an action that should cancel any active selections.
+    /// Clears the tab multi-selection.
     ClearTabMultiSelection,
     /// Creates a new tab group from the current tab multi-selection.
     NewTabGroupFromSelectedTabs,
@@ -362,8 +349,6 @@ pub enum WorkspaceAction {
         color: AnsiColorIdentifier,
         tab_index: usize,
     },
-    /// Toggles the color for a tab group. Clears the color if it was already
-    /// set to `color`; otherwise applies `color` as the uniform group color.
     ToggleTabGroupColor {
         color: AnsiColorIdentifier,
         group_id: TabGroupId,
@@ -377,6 +362,8 @@ pub enum WorkspaceAction {
     ClickedAIAssistantIcon,
     ToggleKeybindingsPage,
     ShowCommandSearch(CommandSearchOptions),
+    TriggerExternalCtrlTFileSearch,
+    TriggerExternalAltCDirectorySearch,
     CreatePersonalNotebook,
     ImportToPersonalDrive,
     ImportToTeamDrive,
@@ -413,8 +400,7 @@ pub enum WorkspaceAction {
     ToggleLeftPanel,
     /// Toggles directly to the Warp Drive tab of the left panel in Code Mode V2
     ToggleWarpDrive,
-    /// Unconditionally opens Warp Drive. This is used in the case of user lifecycle
-    /// events like new user onboarding or when the user joins a team.
+    /// Unconditionally opens Warp Drive.
     OpenWarpDrive,
     /// Toggles the right panel. This happens as an explicit action from the user.
     ToggleRightPanel,
@@ -827,6 +813,12 @@ pub enum WorkspaceAction {
     /// Reset the auto-handoff sleep modal shown state (for debugging)
     #[cfg(debug_assertions)]
     ResetAutoHandoffSleepModalState,
+    /// Open the "You're using your ChatGPT plan" modal (for debugging)
+    #[cfg(debug_assertions)]
+    OpenChatGPTPlanModal,
+    /// Reset the ChatGPT plan modal shown state (for debugging)
+    #[cfg(debug_assertions)]
+    ResetChatGPTPlanModalState,
     /// Trigger the auto-handoff-to-cloud flow in-process, as if the machine
     /// were about to sleep (for debugging)
     #[cfg(debug_assertions)]
@@ -954,6 +946,7 @@ pub enum WorkspaceAction {
     OpenNewWindowForTeam {
         team_uid: ServerId,
     },
+    BrowseTeams,
     /// Shows (toggles) the team-switcher dropdown menu in the title bar.
     ShowTeamSwitcherMenu,
 }
@@ -1164,6 +1157,8 @@ impl WorkspaceAction {
             | OpenPromptSuggestionsUnavailableModal
             | ToggleKeybindingsPage
             | ShowCommandSearch(_)
+            | TriggerExternalCtrlTFileSearch
+            | TriggerExternalAltCDirectorySearch
             | ToggleMouseReporting
             | ToggleScrollReporting
             | ToggleFocusReporting
@@ -1312,6 +1307,7 @@ impl WorkspaceAction {
             | OpenCreateAuthSecretModal { .. }
             | OpenNetworkLogPane
             | OpenNewWindowForTeam { .. }
+            | BrowseTeams
             | ShowTeamSwitcherMenu => false,
             #[cfg(debug_assertions)]
             ShowHoaOnboardingFlow => false,
@@ -1333,6 +1329,8 @@ impl WorkspaceAction {
             | ResetFeatureIntroModalState
             | OpenAutoHandoffSleepModal
             | ResetAutoHandoffSleepModalState
+            | OpenChatGPTPlanModal
+            | ResetChatGPTPlanModalState
             | TriggerAutoHandoffToCloud
             | OpenFreeAiRemovalModal
             | ResetFreeAiRemovalModalState
@@ -1353,6 +1351,8 @@ impl WorkspaceAction {
             OpenEnvironmentManagementPane => false,
             #[cfg(target_os = "linux")]
             DismissWaylandCrashRecoveryBannerAndOpenLink => false,
+            #[cfg(all(feature = "warpeer", feature = "local_fs"))]
+            AddLocalRunbookFolder => false,
             #[cfg(target_family = "wasm")]
             OpenLinkOnDesktop(_) => false,
             // actions that are related to updating user settings or

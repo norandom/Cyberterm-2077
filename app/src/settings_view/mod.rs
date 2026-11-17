@@ -34,7 +34,7 @@ use settings_page::{
     SettingsPageViewHandle,
 };
 use show_blocks_view::{ShowBlocksEvent, ShowBlocksView};
-use teams_page::{TeamsPageView, TeamsPageViewEvent};
+use teams_page::{TeamsPageAction, TeamsPageView, TeamsPageViewEvent};
 #[cfg(feature = "terminal_visuals")]
 use terminal_visuals_page::TerminalVisualsSettingsPageView;
 use warp_agent_page::{WarpAgentPageAction, WarpAgentPageEvent, WarpAgentPageView};
@@ -123,6 +123,7 @@ mod execution_profile_view;
 mod features;
 mod features_page;
 pub(crate) mod handoff_environment_creation_modal;
+mod join_teams_modal;
 pub mod keybindings;
 #[cfg(feature = "hosted_agent_sdk")]
 mod knowledge_page;
@@ -172,6 +173,7 @@ mod warp_agent_page;
 mod warp_drive_page;
 mod warpify_page;
 
+pub(crate) use admin_actions::AdminActions;
 #[cfg(feature = "tui")]
 pub(crate) use billing_and_usage::billing_cycle_usage_common::{format_cost_cents, format_credits};
 pub use billing_and_usage_page::create_discount_badge;
@@ -614,7 +616,6 @@ pub mod flags {
     pub const DIM_INACTIVE_PANES_FLAG: &str = "Dim_Inactive_Panes";
     pub const ACTIVE_PANE_INDICATOR_FLAG: &str = "Active_Pane_Indicator";
     pub const OPEN_WINDOWS_AT_CUSTOM_SIZE_FLAG: &str = "Open_Windows_At_Custom_Size";
-    pub const WINDOW_BLUR_TEXTURE_FLAG: &str = "Window_Blur_Texture";
     pub const LEFT_PANEL_VISIBILITY_ACROSS_TABS_FLAG: &str = "Left_Panel_Visibility_Across_Tabs";
     pub const MATCH_AI_FONT_TO_TERMINAL_FONT_FLAG: &str = "Match_AI_Font_To_Terminal_Font";
     pub const MATCH_NOTEBOOK_FONT_SIZE_TO_TERMINAL_FONT_SIZE_FLAG: &str =
@@ -680,6 +681,7 @@ pub mod flags {
     pub const ORCHESTRATION_MESSAGE_DISPLAY_ALWAYS_COLLAPSE: &str =
         "Orchestration_Message_Display_AlwaysCollapse";
     pub const PROMPT_SUBMISSION_INTERRUPT: &str = "Prompt_Submission_Interrupt";
+    pub const PROMPT_SUBMISSION_STEER: &str = "Prompt_Submission_Steer";
     pub const PROMPT_SUBMISSION_QUEUE: &str = "Prompt_Submission_Queue";
     pub const LRC_SUBMISSION_SEND_IMMEDIATELY: &str = "LRC_Submission_Send_Immediately";
     pub const LRC_SUBMISSION_QUEUE_UNTIL_COMMAND_COMPLETES: &str =
@@ -1353,7 +1355,7 @@ impl SettingsView {
         });
 
         // About page
-        let about_page_handle = ctx.add_view(AboutPageView::new);
+        let about_page_handle = ctx.add_typed_action_view(AboutPageView::new);
 
         // Warp Agent page
         let warp_agent_page_handle = ctx.add_typed_action_view(WarpAgentPageView::new);
@@ -1386,7 +1388,7 @@ impl SettingsView {
         });
 
         // Billing & Usage page (internally, this routes to the v1 or v2 version. Depending on FFs and current plan).
-        let billing_and_usage_handle = ctx.add_view(BillingAndUsageDispatchView::new);
+        let billing_and_usage_handle = ctx.add_typed_action_view(BillingAndUsageDispatchView::new);
         ctx.subscribe_to_view(&billing_and_usage_handle, |me, _, event, ctx| {
             me.handle_billing_and_usage_page_event(event, ctx);
         });
@@ -2287,6 +2289,16 @@ impl SettingsView {
             view.update(ctx, |view, ctx| {
                 view.open_team_members(email, ctx);
             })
+        }
+    }
+
+    pub fn open_teams_page_join_modal(&mut self, ctx: &mut ViewContext<Self>) {
+        if let Some(team_page) = self.settings_page(SettingsSection::Teams)
+            && let SettingsPageViewHandle::Teams(view) = &team_page.view_handle
+        {
+            view.update(ctx, |view, ctx| {
+                view.handle_action(&TeamsPageAction::ShowJoinTeamsModal, ctx);
+            });
         }
     }
 

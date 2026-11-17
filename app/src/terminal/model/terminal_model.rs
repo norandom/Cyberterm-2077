@@ -19,7 +19,9 @@ use warp_core::features::FeatureFlag;
 use warp_core::semantic_selection::SemanticSelection;
 use warp_errors::report_error;
 pub use warp_terminal::event::ExitReason;
-use warp_terminal::event::validate_and_decode_in_band_command_output_to_bytes;
+use warp_terminal::event::{
+    ObservedExitStatus, validate_and_decode_in_band_command_output_to_bytes,
+};
 pub use warp_terminal::model::{BlockIndex, RangeInModel};
 use warp_terminal::model::{KeyboardModes, KeyboardModesApplyBehavior};
 use warpui::AppContext;
@@ -65,9 +67,10 @@ use crate::terminal::event_listener::ChannelEventListener;
 pub use crate::terminal::history::HistoryEntry;
 use crate::terminal::model::ansi;
 use crate::terminal::model::ansi::{
-    ClearValue, CommandFinishedValue, CompletionMetadata, ExitShellValue, Handler, InitShellValue,
-    InitSubshellValue, PreInteractiveSSHSessionValue, PrecmdValue, PreexecValue, PromptMetadata,
-    SSHValue, SourcedRcFileForWarpValue,
+    ClearValue, CommandFinishedValue, CompletionMetadata, ExitShellValue,
+    ExternalShellWidgetSelectionValue, Handler, InitShellValue, InitSubshellValue,
+    PreInteractiveSSHSessionValue, PrecmdValue, PreexecValue, PromptMetadata, SSHValue,
+    SourcedRcFileForWarpValue,
 };
 use crate::terminal::model::bootstrap::BootstrapStage;
 use crate::terminal::model::completions::{ShellCompletion, ShellCompletionUpdate};
@@ -471,6 +474,8 @@ pub struct TerminalModel {
 
     /// Whether or not the underlying shell process has terminated.
     handled_exit: bool,
+    pending_shell_recovery_status: Option<ObservedExitStatus>,
+    shell_replacement_pending: bool,
 
     /// The shell type of the login shell for this session.
     shell_launch_state: ShellLaunchState,
@@ -1106,6 +1111,8 @@ impl TerminalModel {
             is_receiving_kitty_image_data: IsReceivingKittyActionData::No,
             did_receive_rc_file_dcs: None,
             handled_exit: false,
+            pending_shell_recovery_status: None,
+            shell_replacement_pending: false,
             env_var_collection_name: None,
             shell_launch_state: shell_state,
             obfuscate_secrets,
@@ -1498,16 +1505,78 @@ impl TerminalModel {
         self.ignore_bootstrapping_messages = true;
     }
 
+    /// Reacts to the PTY going away. For a shared ambient agent session with shell respawn
+    /// enabled, a shell process exit is only announced via [`Event::ShellExitObserved`] so the
+    /// owning surface can decide between recovering the shell and calling
+    /// [`Self::finalize_exit`]; every other terminal and reason finalizes immediately.
     pub fn exit(&mut self, reason: ExitReason) {
-        // If we've already responded to the shell/event loop exiting, there's
-        // nothing more to do.
+        if self.shell_replacement_pending {
+            self.shell_process_info = None;
+            let status = match reason {
+                ExitReason::ShellProcessExited { status } => status,
+                ExitReason::PtySpawnFailed
+                | ExitReason::PtyDisconnected
+                | ExitReason::ProcessKilled
+                | ExitReason::ShellNotFound => ObservedExitStatus::Unavailable,
+            };
+            self.event_proxy
+                .send_app_event(Event::ShellExitObserved { status });
+            return;
+        }
+        let ExitReason::ShellProcessExited { status } = reason else {
+            self.finalize_exit(reason);
+            return;
+        };
         if self.handled_exit {
             return;
+        }
+        if !FeatureFlag::CloudAgentShellRespawn.is_enabled()
+            || !self.is_shared_ambient_agent_session()
+        {
+            self.finalize_exit(reason);
+            return;
+        }
+        // The pty is going away, so its descriptor must not be read again: the
+        // OS is free to hand the same number to an unrelated file.
+        self.shell_process_info = None;
+        self.event_proxy
+            .send_app_event(Event::ShellExitObserved { status });
+    }
+
+    /// Commits to replacing the exited shell: the interrupted block is finished with `status`
+    /// once the replacement shell initializes instead of the terminal becoming read-only.
+    pub fn prepare_shell_recovery(&mut self, status: ObservedExitStatus) {
+        self.pending_shell_recovery_status = Some(status);
+        self.exit_alt_screen(true);
+    }
+
+    pub fn prepare_shell_replacement(&mut self) {
+        self.shell_replacement_pending = true;
+        self.shell_process_info = None;
+    }
+
+    pub fn finish_shell_replacement(&mut self, succeeded: bool) {
+        if self.shell_replacement_pending && !succeeded {
+            let transition = self.plan_lifecycle_transition(LifecycleInput::Exit, None, None, None);
+            self.handled_exit = true;
+            self.shell_process_info = None;
+            self.ignore_bootstrapping_messages = true;
+            self.commit_lifecycle_transition(&transition);
+        }
+        self.shell_replacement_pending = false;
+    }
+
+    /// Makes the terminal read-only and emits [`Event::Exit`]. Returns `false` if the exit was
+    /// already handled.
+    pub fn finalize_exit(&mut self, reason: ExitReason) -> bool {
+        if self.handled_exit {
+            return false;
         }
         log::debug!("Terminal model exiting: reason={reason:?}");
         let transition = self.plan_lifecycle_transition(LifecycleInput::Exit, None, None, None);
 
         self.handled_exit = true;
+        self.pending_shell_recovery_status = None;
         // The pty is going away, so its descriptor must not be read again: the
         // OS is free to hand the same number to an unrelated file.
         self.shell_process_info = None;
@@ -1519,6 +1588,7 @@ impl TerminalModel {
         self.block_list.active_block_mut().finish(0);
         self.event_proxy.send_app_event(Event::Exit { reason });
         self.commit_lifecycle_transition(&transition);
+        true
     }
 
     pub fn is_read_only(&self) -> bool {
@@ -3183,7 +3253,8 @@ impl ansi::Handler for TerminalModel {
             self.pending_session_info = Some(pending_session_info.clone());
 
             if self.block_list().is_bootstrapped() {
-                self.block_list_mut().reinit_shell();
+                let interrupted_status = self.pending_shell_recovery_status.take();
+                self.block_list_mut().reinit_shell(interrupted_status);
             }
 
             self.emit_handler_event(HandlerEvent::InitShell {
@@ -3199,6 +3270,11 @@ impl ansi::Handler for TerminalModel {
 
     fn input_buffer(&mut self, data: InputBufferValue) {
         delegate!(self.input_buffer(data));
+    }
+
+    fn external_shell_widget_selection(&mut self, data: ExternalShellWidgetSelectionValue) {
+        self.event_proxy
+            .send_app_event(Event::ExternalShellWidgetSelection(data));
     }
 
     fn init_subshell(&mut self, data: InitSubshellValue) {
@@ -3287,11 +3363,12 @@ impl ansi::Handler for TerminalModel {
                 };
                 self.is_receiving_in_band_command_output = IsReceivingInBandCommandOutput::No;
             }
-            IsReceivingInBandCommandOutput::No => {
+            IsReceivingInBandCommandOutput::No if from_osc_sequence => {
                 log::warn!(
-                    "Received 'end_in_band_command_output' while not expecting to read in-band command output."
+                    "Received an in-band command output end OSC while not expecting in-band command output."
                 );
             }
+            IsReceivingInBandCommandOutput::No => {}
         }
 
         #[cfg(windows)]

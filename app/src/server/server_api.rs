@@ -30,6 +30,7 @@ pub(crate) mod presigned_upload;
 #[cfg(not(feature = "hosted_uploads"))]
 #[path = "server_api/presigned_upload_disabled.rs"]
 pub(crate) mod presigned_upload;
+pub mod prewarmed_sandbox;
 pub mod referral;
 pub mod team;
 #[cfg(feature = "tui")]
@@ -47,10 +48,12 @@ use anyhow::{Context, Result, anyhow};
 use auth::AuthClient;
 use block::BlockClient;
 use channel_versions::ChannelVersions;
-use chrono::{DateTime, FixedOffset};
+use chrono::{DateTime, FixedOffset, Utc};
 use factory::FactoryClient;
 use instant::Instant;
 use managed_mcp::ManagedMcpClient;
+use managed_secrets::AppManagedSecretsClient;
+use non_structural_derive::non_structural_derive;
 use object::ObjectClient;
 use parking_lot::Mutex;
 use referral::ReferralsClient;
@@ -63,12 +66,11 @@ use url::Url;
 use warp_core::context_flag::ContextFlag;
 use warp_core::telemetry::TelemetryEvent;
 use warp_errors::{AnyhowErrorExt, ErrorExt, register_error, report_error};
-use warp_managed_secrets::client::ManagedSecretsClient;
 use warp_server_client::HttpStatusError;
 use warp_server_client::auth::{AuthClientImpl, AuthEvent, EXPERIMENT_ID_HEADER};
 use warp_server_client::base_client::{
     AmbientHeaderPolicy, AuthenticatedGraphqlConfig, BaseClient, GraphqlRoutingConfig,
-    TEAM_UID_HEADER,
+    HeaderOverride, TEAM_UID_HEADER,
 };
 use warp_server_client::iap::{IapManager, IapState};
 use warp_server_client::network_logging::NetworkLogModel;
@@ -457,6 +459,13 @@ register_error!(TranscribeError);
 /// Prefer NOT adding new methods directly on this struct; instead, add to one of the existing
 /// client trait objects, or create your own. This helps keep `ServerApi` from being overloaded
 /// with disparate types of calls, and allows you to mock methods in tests.
+//
+// `Send` and `Sync` are implemented explicitly, rather than left to the compiler's auto-trait
+// rules, to save compile time. rustc does not share auto-trait results between async functions,
+// so each async method that needs `ServerApi: Send` or `ServerApi: Sync` would otherwise re-check
+// every type reachable from these fields, down through the HTTP client internals. The macro still
+// verifies that each field is `Send` and `Sync`.
+#[non_structural_derive(Send, Sync)]
 pub struct ServerApi {
     base_client: Arc<BaseClient>,
     // TODO(jeff): Make `TelemetryApi` another type of client, and move it off `ServerApi`.
@@ -473,6 +482,7 @@ impl ServerApi {
         ctx: &mut ModelContext<ServerApiProvider>,
     ) -> Self {
         let mut client = http_client::Client::new();
+        let mut external_client = http_client::Client::new_external();
         let iap_token_provider = iap_state.map(|state| {
             client.set_iap_token_provider(state.clone());
             state as Arc<dyn http_client::iap::IapTokenProvider>
@@ -480,11 +490,15 @@ impl ServerApi {
         let mut telemetry_api = TelemetryApi::new();
         if ContextFlag::NetworkLogConsole.is_enabled() {
             NetworkLogModel::handle(ctx).update(ctx, |model, model_ctx| {
-                model.install_on_clients([&mut client, &mut telemetry_api.client], model_ctx);
+                model.install_on_clients(
+                    [&mut client, &mut external_client, &mut telemetry_api.client],
+                    model_ctx,
+                );
             });
         }
         Self::new_with_parts(
             Arc::new(client),
+            Arc::new(external_client),
             auth_state,
             event_sender,
             agent_source,
@@ -495,6 +509,7 @@ impl ServerApi {
 
     fn new_with_parts(
         client: Arc<http_client::Client>,
+        external_client: Arc<http_client::Client>,
         auth_state: Arc<AuthState>,
         event_sender: async_channel::Sender<AuthEvent>,
         agent_source: Option<ai::AgentSource>,
@@ -510,6 +525,7 @@ impl ServerApi {
         let authenticated_graphql = AuthenticatedGraphqlConfig::default();
         let base_client = Arc::new(BaseClient::new(
             client,
+            external_client,
             auth_state,
             event_sender,
             agent_source.map(|source| source.as_str().to_string()),
@@ -531,7 +547,15 @@ impl ServerApi {
         let auth_state = Arc::new(AuthState::new_for_test());
         let client = Arc::new(http_client::Client::new_for_test());
 
-        Self::new_with_parts(client, auth_state, tx, None, None, TelemetryApi::new())
+        Self::new_with_parts(
+            client,
+            Arc::new(http_client::Client::new_external_for_test()),
+            auth_state,
+            tx,
+            None,
+            None,
+            TelemetryApi::new(),
+        )
     }
 
     #[cfg(all(test, feature = "skip_login"))]
@@ -545,6 +569,7 @@ impl ServerApi {
         }
         Self::new_with_parts(
             Arc::new(http_client::Client::new_for_test()),
+            Arc::new(http_client::Client::new_external_for_test()),
             auth_state,
             event_sender,
             None,
@@ -565,12 +590,42 @@ impl ServerApi {
             .await
     }
 
+    /// Returns ambient agent headers (workload token, cloud-agent ID) scoped to one task,
+    /// without disturbing the client's own inherited ambient-agent-task-ID state.
     async fn ambient_agent_headers_for_task(
         &self,
         task_id: &AmbientAgentTaskId,
     ) -> Result<Vec<(String, String)>> {
         self.ambient_headers(AmbientHeaderPolicy::for_task(task_id.to_string()))
             .await
+    }
+
+    /// Returns task-scoped ambient agent headers for a caller that pins them into a long-lived
+    /// transport instead of resolving them per request.
+    ///
+    /// `must_outlive` is the instant through which the pinned headers have to keep working,
+    /// typically the end of the run. The workload token is attached only when it stays valid
+    /// that long, since warp-server rejects an expired one but tolerates its absence. Pass
+    /// `None` when no such instant is known, which resolves the token the same way an ordinary
+    /// per-request caller would.
+    pub async fn pinned_ambient_agent_headers_for_task(
+        &self,
+        task_id: &AmbientAgentTaskId,
+        must_outlive: Option<DateTime<Utc>>,
+    ) -> Result<Vec<(String, String)>> {
+        let workload_token = match must_outlive {
+            Some(must_outlive) => self
+                .base_client
+                .get_ambient_workload_token_valid_until(must_outlive)
+                .await?
+                .map_or(HeaderOverride::Omit, HeaderOverride::Set),
+            None => HeaderOverride::Inherit,
+        };
+        self.ambient_headers(AmbientHeaderPolicy {
+            workload_token,
+            ..AmbientHeaderPolicy::for_task(task_id.to_string())
+        })
+        .await
     }
 
     pub fn send_graphql_request<'a, QF, O: warp_graphql::client::Operation<QF> + Send + 'a>(
@@ -586,6 +641,37 @@ impl ServerApi {
             operation,
             timeout,
         )
+    }
+
+    fn send_graphql_request_for_team<'a, QF, O: warp_graphql::client::Operation<QF> + Send + 'a>(
+        &'a self,
+        operation: O,
+        team_scope: RequestTeamScope,
+    ) -> BoxFuture<'a, Result<QF>>
+    where
+        QF: 'a,
+    {
+        match Self::team_uid_header_value(team_scope) {
+            Some(team_uid) => {
+                warp_server_client::graphql_helpers::send_team_scoped_graphql_request(
+                    &self.base_client,
+                    operation,
+                    None,
+                    team_uid,
+                )
+            }
+            None => warp_server_client::graphql_helpers::send_graphql_request(
+                &self.base_client,
+                operation,
+                None,
+            ),
+        }
+    }
+
+    fn team_uid_header_value(team_scope: RequestTeamScope) -> Option<String> {
+        team_scope
+            .team_uid()
+            .map(|team_uid| team_uid.uid().to_string())
     }
 
     /// Opens an SSE stream to the agent event-push endpoint.
@@ -715,6 +801,19 @@ impl ServerApi {
     where
         B: Serialize,
     {
+        self.post_public_api_response_for_team(path, body, None)
+            .await
+    }
+
+    async fn post_public_api_response_for_team<B>(
+        &self,
+        path: &str,
+        body: &B,
+        team_scope: Option<RequestTeamScope>,
+    ) -> Result<http_client::Response>
+    where
+        B: Serialize,
+    {
         let auth_token = self
             .get_or_refresh_access_token()
             .await
@@ -730,6 +829,9 @@ impl ServerApi {
         for (name, value) in self.ambient_agent_headers().await? {
             request = request.header(name, value);
         }
+        if let Some(team_uid) = team_scope.and_then(Self::team_uid_header_value) {
+            request = request.header(TEAM_UID_HEADER, team_uid);
+        }
 
         let response = request
             .send()
@@ -742,6 +844,45 @@ impl ServerApi {
             self.observe_iap_challenge(&response);
             Err(Self::error_from_response(response).await)
         }
+    }
+
+    async fn get_public_api_for_team<R>(
+        &self,
+        path: &str,
+        team_scope: RequestTeamScope,
+    ) -> Result<R>
+    where
+        R: serde::de::DeserializeOwned,
+    {
+        let auth_token = self
+            .get_or_refresh_access_token()
+            .await
+            .context("Failed to get access token for API request")?;
+        let url = format!("{}/api/v1/{path}", ChannelState::server_root_url());
+        let mut request = self.base_client.http_client().get(&url);
+        if let Some(token) = auth_token.as_bearer_token() {
+            request = request.bearer_auth(token);
+        }
+        if let Some(team_uid) = Self::team_uid_header_value(team_scope) {
+            request = request.header(TEAM_UID_HEADER, team_uid);
+        }
+        for (name, value) in self.ambient_agent_headers().await? {
+            request = request.header(name, value);
+        }
+
+        let response = request
+            .send()
+            .await
+            .with_context(|| format!("Failed to send API request to {url}"))?;
+        if !response.status().is_success() {
+            self.observe_iap_challenge(&response);
+            return Err(Self::error_from_response(response).await);
+        }
+
+        response
+            .json::<R>()
+            .await
+            .with_context(|| format!("Failed to deserialize response from {url}"))
     }
 
     /// Converts a non-success public API response into the most specific client error
@@ -764,10 +905,7 @@ impl ServerApi {
 
         // Get the response text first since we may need to try multiple deserializations.
         let response_text = response.text().await.unwrap_or_default();
-        let status_error = HttpStatusError {
-            status: status.as_u16(),
-            body: response_text.clone(),
-        };
+        let status_error = HttpStatusError::new(status.as_u16(), response_text.clone());
 
         // Check for AT_CAPACITY error code header.
         if is_at_capacity
@@ -804,6 +942,26 @@ impl ServerApi {
         R: serde::de::DeserializeOwned,
     {
         let response = self.post_public_api_response(path, body).await?;
+        let url = response.url().clone();
+        response
+            .json::<R>()
+            .await
+            .with_context(|| format!("Failed to deserialize response from {url}"))
+    }
+
+    async fn post_public_api_for_team<B, R>(
+        &self,
+        path: &str,
+        body: &B,
+        team_scope: RequestTeamScope,
+    ) -> Result<R>
+    where
+        B: Serialize,
+        R: serde::de::DeserializeOwned,
+    {
+        let response = self
+            .post_public_api_response_for_team(path, body, Some(team_scope))
+            .await?;
         let url = response.url().clone();
         response
             .json::<R>()
@@ -1481,7 +1639,7 @@ impl ServerApiProvider {
         self.server_api.clone()
     }
 
-    pub fn get_managed_secrets_client(&self) -> Arc<dyn ManagedSecretsClient> {
+    pub fn get_managed_secrets_client(&self) -> Arc<AppManagedSecretsClient> {
         self.server_api.clone()
     }
 
@@ -1502,6 +1660,14 @@ impl ServerApiProvider {
 
     #[cfg_attr(target_family = "wasm", expect(dead_code))]
     pub fn get_harness_support_client(&self) -> Arc<dyn harness_support::HarnessSupportClient> {
+        self.server_api.clone()
+    }
+
+    /// Returns the standby API client with the app's shared authentication state.
+    #[cfg_attr(target_family = "wasm", expect(dead_code))]
+    pub fn get_prewarmed_sandbox_client(
+        &self,
+    ) -> Arc<dyn prewarmed_sandbox::PrewarmedSandboxClient> {
         self.server_api.clone()
     }
 }

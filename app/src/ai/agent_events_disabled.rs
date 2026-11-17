@@ -81,7 +81,7 @@ pub(crate) struct AgentMessageEventMetadata {
 
 impl AgentMessageEventMetadata {
     pub(crate) fn from_event(event: &AgentRunEvent) -> Option<Self> {
-        if event.event_type != "new_message" {
+        if event.kind != crate::server::server_api::ai::AgentRunEventKind::NewMessage {
             return None;
         }
 

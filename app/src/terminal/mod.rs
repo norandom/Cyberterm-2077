@@ -74,6 +74,7 @@ pub mod settings;
 mod share_block_modal;
 pub mod shared_session;
 mod shell_launch_state;
+pub mod shell_recovery;
 pub mod universal_developer_input;
 #[cfg(feature = "terminal_visuals")]
 pub mod visual_runtime;

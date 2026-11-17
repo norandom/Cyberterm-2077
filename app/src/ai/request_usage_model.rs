@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use warp_core::user_preferences::GetUserPreferences as _;
 use warp_errors::report_error;
 pub use warp_graphql::billing::BonusGrantType;
+use warp_graphql::queries::get_request_limit_info::WorkspaceIncludedUsageInfo;
 use warp_graphql::scalars::time::ServerTimestamp;
 use warpui::{AppContext, Entity, ModelContext, SingletonEntity};
 
@@ -60,6 +61,12 @@ pub struct BonusGrant {
     pub user_facing_message: Option<String>,
     pub request_credits_granted: i32,
     pub request_credits_remaining: i32,
+    /// The grant's `usageCentsGranted`: the usage it granted, in US cents, as recorded on the
+    /// grant ledger. `None` when the server does not send it.
+    pub usage_cents_granted: Option<f64>,
+    /// The grant's `usageCentsRemaining`: the usage left on it, in US cents, as recorded on the
+    /// grant ledger. `None` when the server does not send it.
+    pub usage_cents_remaining: Option<f64>,
     pub scope: BonusGrantScope,
 }
 
@@ -79,6 +86,15 @@ pub enum RequestLimitRefreshDuration {
 pub struct RequestLimitInfo {
     pub limit: usize,
     pub num_requests_used_since_refresh: usize,
+    /// The server's `includedUsageCents`: the included monthly allowance in US cents, when it
+    /// sends one. Whether to display usage in dollars is decided by the plan's
+    /// `Tier::charge_unit`, not by this being `Some`.
+    #[serde(default)]
+    pub included_usage_cents: Option<f64>,
+    /// The server's `usageCentsUsedSinceLastRefresh`: how much of the included allowance has
+    /// been used, in US cents, when it sends one.
+    #[serde(default)]
+    pub usage_cents_used_since_last_refresh: Option<f64>,
     pub next_refresh_time: ServerTimestamp,
     pub is_unlimited: bool,
     pub request_limit_refresh_duration: RequestLimitRefreshDuration,
@@ -107,6 +123,8 @@ impl Default for RequestLimitInfo {
         Self {
             limit: 150,
             num_requests_used_since_refresh: 0,
+            included_usage_cents: None,
+            usage_cents_used_since_last_refresh: None,
             next_refresh_time: ServerTimestamp::new(Utc::now() + chrono::Duration::days(30)),
             is_unlimited: false,
             request_limit_refresh_duration: RequestLimitRefreshDuration::Monthly,
@@ -138,10 +156,17 @@ pub struct CodebaseContextUsageLimit {
     pub embedding_generation_batch_size: usize,
 }
 
+#[derive(Clone, Debug)]
+pub struct WorkspaceIncludedUsage {
+    pub workspace_uid: WorkspaceUid,
+    pub info: WorkspaceIncludedUsageInfo,
+}
+
 /// Contains all usage-related information fetched from the server.
 pub struct RequestUsageInfo {
     pub request_limit_info: RequestLimitInfo,
     pub bonus_grants: Vec<BonusGrant>,
+    pub workspace_allowances: Vec<WorkspaceIncludedUsage>,
 }
 
 #[cfg(feature = "agent_mode_evals")]
@@ -150,6 +175,8 @@ impl RequestLimitInfo {
         Self {
             limit: 999999,
             num_requests_used_since_refresh: 0,
+            included_usage_cents: None,
+            usage_cents_used_since_last_refresh: None,
             next_refresh_time: ServerTimestamp::new(Utc::now() + chrono::Duration::days(30)),
             is_unlimited: true,
             request_limit_refresh_duration: RequestLimitRefreshDuration::Monthly,
@@ -206,6 +233,7 @@ struct ServerAvailabilityState {
 
 pub struct AIRequestUsageModel {
     ai_client: Arc<dyn AIClient>,
+    workspace_allowances: Vec<WorkspaceIncludedUsage>,
 
     /// The last time at which `request_limit_info` was updated.
     last_update_time: Option<Instant>,
@@ -240,6 +268,20 @@ pub enum AIRequestUsageModelEvent {
 }
 
 impl AIRequestUsageModel {
+    pub(crate) fn workspace_included_usage(
+        &self,
+        ctx: &AppContext,
+    ) -> Option<&WorkspaceIncludedUsageInfo> {
+        if !AuthStateProvider::as_ref(ctx).get().is_logged_in() {
+            return None;
+        }
+        let workspace = UserWorkspaces::as_ref(ctx).current_workspace()?;
+        self.workspace_allowances
+            .iter()
+            .find(|allowance| allowance.workspace_uid == workspace.uid)
+            .map(|allowance| &allowance.info)
+    }
+
     pub fn new(ai_client: Arc<dyn AIClient>, ctx: &mut ModelContext<Self>) -> Self {
         // Check if the user has cached request limit info from before.
         // This is only used to show the latest known value before we finish refreshing from the server below.
@@ -249,6 +291,7 @@ impl AIRequestUsageModel {
 
         Self {
             ai_client,
+            workspace_allowances: Vec::new(),
             request_limit_info,
             last_update_time: None,
             bonus_grants: vec![],
@@ -262,6 +305,7 @@ impl AIRequestUsageModel {
     pub fn new_for_test(ai_client: Arc<dyn AIClient>, ctx: &mut ModelContext<Self>) -> Self {
         Self {
             ai_client,
+            workspace_allowances: Vec::new(),
             last_update_time: None,
             request_limit_info: RequestLimitInfo::default(),
             bonus_grants: vec![],
@@ -299,6 +343,7 @@ impl AIRequestUsageModel {
                     Ok(usage_info) => {
                         let request_limit = usage_info.request_limit_info.limit;
                         model.bonus_grants = usage_info.bonus_grants;
+                        model.workspace_allowances = usage_info.workspace_allowances;
                         model.update_request_limit_info(usage_info.request_limit_info, ctx);
                         Some(request_limit)
                     }
@@ -540,17 +585,19 @@ impl AIRequestUsageModel {
     ) -> bool {
         let user_workspaces = UserWorkspaces::as_ref(ctx);
         let api_keys = ApiKeyManager::as_ref(ctx);
-        let has_provider_key =
-            api_keys.keys().provider_key_count() > 0 || api_keys.has_grok_subscription();
+        let has_provider_key = api_keys.keys().provider_key_count() > 0
+            || api_keys.has_grok_subscription()
+            || api_keys.has_chatgpt_subscription();
         if user_workspaces.is_byo_api_key_enabled(ctx)
             && user_workspaces.are_member_byo_keys_allowed(scope)
             && has_provider_key
         {
             return true;
         }
+        // `custom_endpoints()` is the resolved list request payloads already use, including
+        // current-format definitions whose secrets are stored apart from `keys.custom_endpoints`.
         let has_custom_endpoint_key = api_keys
-            .keys()
-            .custom_endpoints
+            .custom_endpoints()
             .iter()
             .any(|endpoint| !endpoint.api_key.trim().is_empty());
         if user_workspaces.is_byo_endpoint_enabled(ctx)
@@ -600,7 +647,7 @@ impl AIRequestUsageModel {
                     .is_some_and(|price| !workspace.would_addon_purchase_reach_limit(price))
         });
 
-        // If you have provided your own API key or connected a Grok
+        // If you have provided your own API key or connected a Grok or ChatGPT
         // subscription, it doesn't matter if you are out of warp-provided requests.
         let has_byo_credentials = Self::has_usable_member_byo_inference_path(scope, ctx);
 
@@ -657,6 +704,24 @@ impl AIRequestUsageModel {
         self.request_limit_info.is_unlimited
     }
 
+    /// The dollar value of the included allowance, in cents, when the server supplied one.
+    pub fn included_usage_cents(&self) -> Option<f64> {
+        self.request_limit_info.included_usage_cents
+    }
+
+    /// The dollar value of the included allowance used since the last refresh, in cents, when
+    /// the server supplied one. Reads as zero once the refresh time has passed, mirroring
+    /// [`Self::requests_used`].
+    pub fn usage_cents_used(&self) -> Option<f64> {
+        let used = self
+            .request_limit_info
+            .usage_cents_used_since_last_refresh?;
+        if self.next_refresh_time() <= Utc::now() {
+            return Some(0.);
+        }
+        Some(used)
+    }
+
     pub fn refresh_duration_to_string(&self) -> String {
         match self.request_limit_info.request_limit_refresh_duration {
             RequestLimitRefreshDuration::Weekly => "weekly".to_string(),
@@ -669,24 +734,26 @@ impl AIRequestUsageModel {
         &self.bonus_grants
     }
 
+    fn ambient_only_grants(&self) -> impl Iterator<Item = &BonusGrant> {
+        self.bonus_grants
+            .iter()
+            .filter(|g| g.grant_type == BonusGrantType::AmbientOnly)
+    }
+
     /// Returns the total remaining ambient-only credits for the user.
     /// Returns None if the user has never received any ambient-only grants.
     pub fn ambient_only_credits_remaining(&self) -> Option<i32> {
-        let ambient_grants: Vec<_> = self
-            .bonus_grants
-            .iter()
-            .filter(|g| g.grant_type == BonusGrantType::AmbientOnly)
-            .collect();
-        if ambient_grants.is_empty() {
-            None
-        } else {
-            Some(
-                ambient_grants
-                    .iter()
-                    .map(|g| g.request_credits_remaining)
-                    .sum(),
-            )
-        }
+        let mut ambient_grants = self.ambient_only_grants().peekable();
+        ambient_grants.peek()?;
+        Some(ambient_grants.map(|g| g.request_credits_remaining).sum())
+    }
+
+    /// The dollar value of [`Self::ambient_only_credits_remaining`], in cents. `None` unless
+    /// every ambient-only grant carries a dollar value.
+    pub fn ambient_only_usage_cents_remaining(&self) -> Option<f64> {
+        let mut ambient_grants = self.ambient_only_grants().peekable();
+        ambient_grants.peek()?;
+        ambient_grants.map(|g| g.usage_cents_remaining).sum()
     }
 
     pub fn is_ambient_credits_banner_dismissed(&self) -> bool {
@@ -702,13 +769,31 @@ impl AIRequestUsageModel {
         ctx.emit(AIRequestUsageModelEvent::AmbientCreditsBannerDismissed);
     }
 
-    pub fn total_workspace_and_team_bonus_credits_remaining(&self, uid: WorkspaceUid) -> i32 {
+    fn workspace_and_team_bonus_grants(
+        &self,
+        uid: WorkspaceUid,
+    ) -> impl Iterator<Item = &BonusGrant> {
         let now = Utc::now();
         self.bonus_grants
             .iter()
-            .filter(|grant| grant.scope.workspace_uid() == Some(uid))
-            .filter(|grant| grant.expiration.is_none_or(|exp| now < exp))
+            .filter(move |grant| grant.scope.workspace_uid() == Some(uid))
+            .filter(move |grant| grant.expiration.is_none_or(|exp| now < exp))
+    }
+
+    pub fn total_workspace_and_team_bonus_credits_remaining(&self, uid: WorkspaceUid) -> i32 {
+        self.workspace_and_team_bonus_grants(uid)
             .map(|grant| grant.request_credits_remaining)
+            .sum()
+    }
+
+    /// The dollar value of [`Self::total_workspace_and_team_bonus_credits_remaining`], in cents.
+    /// `None` unless every counted grant carries a dollar value.
+    pub fn total_workspace_and_team_bonus_usage_cents_remaining(
+        &self,
+        uid: WorkspaceUid,
+    ) -> Option<f64> {
+        self.workspace_and_team_bonus_grants(uid)
+            .map(|grant| grant.usage_cents_remaining)
             .sum()
     }
 
@@ -722,14 +807,26 @@ impl AIRequestUsageModel {
             .unwrap_or(0)
     }
 
-    pub fn total_user_interactive_bonus_credits_remaining(&self) -> i32 {
+    fn user_interactive_bonus_grants(&self) -> impl Iterator<Item = &BonusGrant> {
         let now = Utc::now();
         self.bonus_grants
             .iter()
             .filter(|grant| grant.scope == BonusGrantScope::User)
             .filter(|grant| grant.grant_type != BonusGrantType::AmbientOnly)
-            .filter(|grant| grant.expiration.is_none_or(|exp| now < exp))
+            .filter(move |grant| grant.expiration.is_none_or(|exp| now < exp))
+    }
+
+    pub fn total_user_interactive_bonus_credits_remaining(&self) -> i32 {
+        self.user_interactive_bonus_grants()
             .map(|grant| grant.request_credits_remaining)
+            .sum()
+    }
+
+    /// The dollar value of [`Self::total_user_interactive_bonus_credits_remaining`], in cents.
+    /// `None` unless every counted grant carries a dollar value.
+    pub fn total_user_interactive_bonus_usage_cents_remaining(&self) -> Option<f64> {
+        self.user_interactive_bonus_grants()
+            .map(|grant| grant.usage_cents_remaining)
             .sum()
     }
 

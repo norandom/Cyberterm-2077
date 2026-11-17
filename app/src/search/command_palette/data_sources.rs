@@ -94,6 +94,20 @@ impl DataSourceStore {
                 HashSet::from([QueryFilter::Sessions]),
             );
 
+            #[cfg(all(feature = "warpeer", feature = "local_fs"))]
+            if !is_shared_session_viewer {
+                let source = ctx.add_model(|_| crate::local_runbooks::RunbookDataSource);
+                mixer.add_async_source(
+                    source,
+                    HashSet::from([QueryFilter::Notebooks]),
+                    AddAsyncSourceOptions {
+                        debounce_interval: Some(std::time::Duration::from_millis(100)),
+                        run_in_zero_state: true,
+                        run_when_unfiltered: true,
+                    },
+                    ctx,
+                );
+            }
             if WarpDriveSettings::is_warp_drive_enabled(ctx) {
                 let mut warp_drive_filters = HashSet::from([
                     QueryFilter::Notebooks,

@@ -11,7 +11,7 @@ use warpui::r#async::Timer;
 
 use crate::server::retry_strategies::{is_auth_error, is_transient_http_error};
 use crate::server::server_api::ServerApi;
-use crate::server::server_api::ai::AgentRunEvent;
+use crate::server::server_api::ai::{AgentRunEvent, AgentRunEventKind};
 use crate::server::server_api::presigned_upload::HttpStatusError;
 
 pub(crate) const DEFAULT_AGENT_EVENT_RECONNECT_BACKOFF_STEPS: &[u64] = &[1, 2, 5, 10];
@@ -184,7 +184,7 @@ pub(crate) struct AgentMessageEventMetadata {
 
 impl AgentMessageEventMetadata {
     pub(crate) fn from_event(event: &AgentRunEvent) -> Option<Self> {
-        if event.event_type != "new_message" {
+        if event.kind != AgentRunEventKind::NewMessage {
             return None;
         }
 
@@ -281,10 +281,8 @@ impl AgentEventSource for ServerApiAgentEventSource {
                                 .text()
                                 .await
                                 .unwrap_or_else(|err| format!("(no response body: {err:#})"));
-                            let status_err = HttpStatusError {
-                                status: status_code.as_u16(),
-                                body: body.clone(),
-                            };
+                            let status_err =
+                                HttpStatusError::new(status_code.as_u16(), body.clone());
                             anyhow::Error::new(status_err).context(format!(
                                 "SSE stream error: invalid status code {status_code}: {body}"
                             ))

@@ -15,7 +15,6 @@ use ai::api_keys::{ApiKeyManager, AwsCredentials, AwsCredentialsState};
 use anyhow::{Context as _, Result};
 use vec1::vec1;
 use warp_managed_secrets::client::IdentityTokenOptions;
-use warp_managed_secrets::ManagedSecretManager;
 use warpui::{ModelSpawner, SingletonEntity};
 
 use super::AgentDriver;

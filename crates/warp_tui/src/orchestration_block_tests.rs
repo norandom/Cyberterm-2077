@@ -6,10 +6,11 @@ use ai::agent::orchestration_config::{
 };
 use warp::tui_export::{
     AIActionStatus, AIAgentAction, AIAgentActionId, AIAgentActionType, AIConversationId,
-    Appearance, AuthSecretSelection, OptionRow, OptionSnapshot, OptionSourceStatus,
-    OrchestrationConfigState, OrchestrationEditState, RunAgentsAgentRunConfig,
+    Appearance, AuthSecretSelection, Harness, OptionRow, OptionSnapshot, OptionSourceStatus,
+    OrchestrationConfigState, OrchestrationEditState, ResolvedTeamScope, RunAgentsAgentRunConfig,
     RunAgentsExecutionMode, RunAgentsRequest, ServerApiProvider, TaskId, TeamContext,
     UserWorkspaces, register_tui_session_view_test_singletons,
+    set_tui_auth_secret_preference_for_test, set_tui_workspace_teams_for_test,
 };
 use warp_core::features::FeatureFlag;
 use warpui::platform::WindowStyle;
@@ -24,11 +25,13 @@ use super::{
     TuiOrchestrationBlockAction, TuiOrchestrationBlockEvent, build_request,
 };
 use crate::option_selector::{TuiOptionSelectorAction, TuiOptionSelectorEvent};
-use crate::test_fixtures::TestHostView;
+use crate::test_fixtures::{TestHostView, add_test_action_model};
 
 /// Builds a request with the given harness and execution mode.
 fn request(harness: &str, execution_mode: RunAgentsExecutionMode) -> RunAgentsRequest {
     RunAgentsRequest {
+        delegated_github_coauthor_user_uid: None,
+        metadata: Default::default(),
         summary: "Parallelize the task.".to_string(),
         base_prompt: "base".to_string(),
         skills: Vec::new(),
@@ -36,6 +39,7 @@ fn request(harness: &str, execution_mode: RunAgentsExecutionMode) -> RunAgentsRe
         harness_type: harness.to_string(),
         execution_mode,
         agent_run_configs: vec![RunAgentsAgentRunConfig {
+            metadata: Default::default(),
             name: "researcher".to_string(),
             prompt: "research".to_string(),
             title: "Researcher".to_string(),
@@ -152,6 +156,137 @@ fn edit_state_carries_the_request_auth_secret() {
 }
 
 #[test]
+fn window_team_change_reseeds_the_auth_secret_for_the_new_scope() {
+    App::test((), |mut app| async move {
+        register_tui_session_view_test_singletons(&mut app);
+        let (window_id, _) = app.update(|ctx| {
+            ctx.add_tui_window(
+                AddWindowOptions {
+                    window_style: WindowStyle::NotStealFocus,
+                    ..Default::default()
+                },
+                |_| TestHostView,
+            )
+        });
+        let (other_window_id, _) = app.update(|ctx| {
+            ctx.add_tui_window(
+                AddWindowOptions {
+                    window_style: WindowStyle::NotStealFocus,
+                    ..Default::default()
+                },
+                |_| TestHostView,
+            )
+        });
+        let team_a = 1.into();
+        let team_b = 2.into();
+        app.update(|ctx| {
+            set_tui_workspace_teams_for_test(
+                vec![
+                    (team_a, "Team A".to_string()),
+                    (team_b, "Team B".to_string()),
+                ],
+                ctx,
+            );
+            UserWorkspaces::handle(ctx).update(ctx, |workspaces, ctx| {
+                workspaces.register_window(window_id, Some(team_a), ctx);
+                workspaces.register_window(other_window_id, Some(team_a), ctx);
+                workspaces.switch_window_to_team(window_id, team_b, ctx);
+            });
+            let team_b_scope =
+                UserWorkspaces::as_ref(ctx).team_context_for_window_operation(window_id);
+            set_tui_auth_secret_preference_for_test(
+                &team_b_scope,
+                Harness::Claude,
+                "team-b-key".to_string(),
+                ctx,
+            );
+            UserWorkspaces::handle(ctx).update(ctx, |workspaces, ctx| {
+                workspaces.switch_window_to_team(window_id, team_a, ctx);
+            });
+        });
+
+        let mut incoming = request("claude", remote("env-1", "warp"));
+        incoming.harness_auth_secret_name = Some("team-a-key".to_string());
+        let action = AIAgentAction {
+            id: AIAgentActionId::from("run-agents-team-scope".to_string()),
+            task_id: TaskId::new("task-1".to_string()),
+            action: AIAgentActionType::RunAgents(Box::new(incoming.clone())),
+            requires_result: true,
+        };
+        let action_model = add_test_action_model(&mut app);
+        let run_agents_executor = app.read(|ctx| action_model.as_ref(ctx).run_agents_executor(ctx));
+        let other_action_model = action_model.clone();
+        let other_run_agents_executor = run_agents_executor.clone();
+        let other_incoming = incoming.clone();
+        let other_action = AIAgentAction {
+            id: AIAgentActionId::from("run-agents-other-window".to_string()),
+            task_id: TaskId::new("task-2".to_string()),
+            action: AIAgentActionType::RunAgents(Box::new(other_incoming.clone())),
+            requires_result: true,
+        };
+        let block = app.update(|ctx| {
+            ctx.add_typed_action_tui_view(window_id, move |ctx| {
+                TuiOrchestrationBlock::new(
+                    AIConversationId::new(),
+                    action,
+                    &incoming,
+                    None,
+                    action_model,
+                    run_agents_executor,
+                    Some("auto".to_string()),
+                    false,
+                    ctx,
+                )
+            })
+        });
+        let other_block = app.update(|ctx| {
+            ctx.add_typed_action_tui_view(other_window_id, move |ctx| {
+                TuiOrchestrationBlock::new(
+                    AIConversationId::new(),
+                    other_action,
+                    &other_incoming,
+                    None,
+                    other_action_model,
+                    other_run_agents_executor,
+                    Some("auto".to_string()),
+                    false,
+                    ctx,
+                )
+            })
+        });
+
+        assert_eq!(
+            block.read(&app, |block, _| block.to_request().harness_auth_secret_name),
+            Some("team-a-key".to_string())
+        );
+        block.update(&mut app, |block, ctx| {
+            block.open_page(ConfigPage::ApiKey, ctx);
+        });
+
+        app.update(|ctx| {
+            UserWorkspaces::handle(ctx).update(ctx, |workspaces, ctx| {
+                workspaces.switch_window_to_team(window_id, team_b, ctx);
+            });
+        });
+
+        assert_eq!(
+            block.read(&app, |block, _| block.to_request().harness_auth_secret_name),
+            Some("team-b-key".to_string())
+        );
+        assert_eq!(
+            other_block.read(&app, |block, _| block.to_request().harness_auth_secret_name),
+            Some("team-a-key".to_string())
+        );
+        assert_eq!(
+            block.read(&app, |block, _| block.mode),
+            CardMode::Configuring {
+                page: ConfigPage::ApiKey
+            }
+        );
+    });
+}
+
+#[test]
 fn edit_state_is_overridden_by_an_approved_config() {
     let incoming = request("oz", RunAgentsExecutionMode::Local);
     let config = OrchestrationConfig {
@@ -204,7 +339,8 @@ fn local_request_with_implicit_oz_harness_preserves_explicit_model() {
 
 #[test]
 fn build_request_carries_card_fields_and_edited_run_wide_state() {
-    let original = request("oz", remote("env-1", "warp"));
+    let mut original = request("oz", remote("env-1", "warp"));
+    original.delegated_github_coauthor_user_uid = Some("delegating-human".to_string());
     let mut state = TuiOrchestrationBlock::config_state_from_request(&original, None);
     state.model_id = "gpt-5".to_string();
     state.harness_type = "codex".to_string();
@@ -218,6 +354,10 @@ fn build_request_carries_card_fields_and_edited_run_wide_state() {
     assert_eq!(built.base_prompt, original.base_prompt);
     assert_eq!(built.agent_run_configs, original.agent_run_configs);
     assert_eq!(built.plan_id, original.plan_id);
+    assert_eq!(
+        built.delegated_github_coauthor_user_uid,
+        original.delegated_github_coauthor_user_uid
+    );
     // Run-wide fields come from the edited state; the per-call
     // computer-use flag is preserved through the round trip.
     assert_eq!(built.model_id, "gpt-5");
@@ -297,6 +437,7 @@ impl OrchestrationBlockController for TestController {
         id: &str,
         edit_state: &mut OrchestrationEditState,
         _fallback_base_model_id: Option<String>,
+        _team_scope: &ResolvedTeamScope,
         _ctx: &mut warpui::AppContext,
     ) {
         let state = &mut edit_state.orchestration_config_state;
@@ -365,7 +506,7 @@ fn test_block(
     let action = AIAgentAction {
         id: AIAgentActionId::from("run-agents-1".to_string()),
         task_id: TaskId::new("task-1".to_string()),
-        action: AIAgentActionType::RunAgents(request.clone()),
+        action: AIAgentActionType::RunAgents(Box::new(request.clone())),
         requires_result: true,
     };
     let controller = Rc::new(TestController::default());
@@ -413,7 +554,7 @@ fn renderable_test_block(app: &mut App) -> ViewHandle<TuiOrchestrationBlock> {
     let action = AIAgentAction {
         id: AIAgentActionId::from("run-agents-1".to_string()),
         task_id: TaskId::new("task-1".to_string()),
-        action: AIAgentActionType::RunAgents(request.clone()),
+        action: AIAgentActionType::RunAgents(Box::new(request.clone())),
         requires_result: true,
     };
     let controller: Rc<dyn OrchestrationBlockController> = Rc::new(TestController::default());
@@ -795,7 +936,9 @@ fn background_page_invalidation_does_not_take_focus() {
 #[test]
 fn accepting_dispatches_once_and_releases_focus() {
     App::test((), |mut app| async move {
-        let request = request("oz", RunAgentsExecutionMode::Local);
+        let mut request = request("oz", RunAgentsExecutionMode::Local);
+        request.metadata = [("ticket_id".to_string(), "ENG-42".to_string())].into();
+        request.agent_run_configs[0].metadata = [("stage".to_string(), String::new())].into();
         let (block, controller) = test_block(&mut app, &request);
         assert!(app.read(|ctx| block.as_ref(ctx).is_awaiting_confirmation(ctx)));
 

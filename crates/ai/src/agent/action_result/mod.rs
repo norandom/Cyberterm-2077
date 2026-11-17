@@ -10,7 +10,9 @@ use itertools::Itertools as _;
 pub use mcp::*;
 use serde::{Deserialize, Serialize};
 use warp_core::command::ExitCode;
+use warp_multi_agent_api::StoredScreenshotRef;
 use warp_multi_agent_api::apply_file_diffs_result::success::UpdatedFileContent;
+use warp_terminal::event::ObservedExitStatus;
 use warp_terminal::model::BlockId;
 
 use crate::agent::FileLocations;
@@ -109,6 +111,12 @@ pub enum AIAgentActionResultType {
     /// Result of the client-side wait_for_events watchdog or inbound
     /// resume.
     WaitForEvents(WaitForEventsResult),
+
+    /// An agent hook denied the action before it ran. Unlike the other variants this is not tied
+    /// to one tool: any action can finish with it. `reason` is shown to the model.
+    DeniedByHook {
+        reason: String,
+    },
 }
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
 pub struct ReadFilesFailedFile {
@@ -133,10 +141,16 @@ impl AIAgentActionResultType {
                 RequestCommandOutputResult::Completed { command, .. },
             )
             | AIAgentActionResultType::RequestCommandOutput(
+                RequestCommandOutputResult::ShellRecovered { command, .. },
+            )
+            | AIAgentActionResultType::RequestCommandOutput(
                 RequestCommandOutputResult::LongRunningCommandSnapshot { command, .. },
             )
             | AIAgentActionResultType::ReadShellCommandOutput(
                 ReadShellCommandOutputResult::CommandFinished { command, .. },
+            )
+            | AIAgentActionResultType::ReadShellCommandOutput(
+                ReadShellCommandOutputResult::ShellRecovered { command, .. },
             )
             | AIAgentActionResultType::ReadShellCommandOutput(
                 ReadShellCommandOutputResult::LongRunningCommandSnapshot { command, .. },
@@ -182,6 +196,9 @@ impl Display for AIAgentActionResultType {
             AIAgentActionResultType::AskUserQuestion(result) => result.fmt(f),
             AIAgentActionResultType::RunAgents(result) => result.fmt(f),
             AIAgentActionResultType::WaitForEvents(result) => result.fmt(f),
+            AIAgentActionResultType::DeniedByHook { reason } => {
+                write!(f, "Denied by an agent hook: {reason}")
+            }
             AIAgentActionResultType::OpenCodeReview | AIAgentActionResultType::InitProject => {
                 Ok(())
             }
@@ -264,11 +281,23 @@ pub enum RequestCommandOutputResult {
         is_alt_screen_active: bool,
         activity: Option<LrcActivity>,
     },
+    ShellRecovered {
+        block_id: BlockId,
+        command: String,
+        output: String,
+        status: ObservedExitStatus,
+        restored_working_directory: String,
+        used_fallback_directory: bool,
+        start_ts: Option<DateTime<Local>>,
+        completed_ts: Option<DateTime<Local>>,
+    },
     /// A running command canceled via ctrl-c
     /// would have Completed result with exit code 130.
     CancelledBeforeExecution,
     /// The command was denied because it was present on the denylist.
     Denylisted { command: String },
+    /// The requested command was not started because another command owns the terminal.
+    TerminalBusy { command: String, block_id: BlockId },
 }
 
 impl RequestCommandOutputResult {
@@ -276,14 +305,19 @@ impl RequestCommandOutputResult {
         match self {
             Self::Completed { exit_code, .. } => exit_code.was_successful(),
             Self::LongRunningCommandSnapshot { .. } => true,
-            Self::CancelledBeforeExecution | Self::Denylisted { .. } => false,
+            Self::ShellRecovered { .. }
+            | Self::CancelledBeforeExecution
+            | Self::Denylisted { .. }
+            | Self::TerminalBusy { .. } => false,
         }
     }
 
     pub fn failed(&self) -> bool {
         match self {
             Self::Completed { exit_code, .. } => !exit_code.was_successful(),
-            Self::Denylisted { .. } => true,
+            Self::ShellRecovered { .. } | Self::Denylisted { .. } | Self::TerminalBusy { .. } => {
+                true
+            }
             Self::CancelledBeforeExecution | Self::LongRunningCommandSnapshot { .. } => false,
         }
     }
@@ -309,11 +343,23 @@ impl Display for RequestCommandOutputResult {
             RequestCommandOutputResult::LongRunningCommandSnapshot { command, .. } => {
                 write!(f, "Command '{command}' is long-running")
             }
+            RequestCommandOutputResult::ShellRecovered {
+                command, status, ..
+            } => write!(
+                f,
+                "Command '{command}' terminated the persistent cloud shell ({status})"
+            ),
             RequestCommandOutputResult::CancelledBeforeExecution => {
                 write!(f, "Command output cancelled")
             }
             RequestCommandOutputResult::Denylisted { .. } => {
                 write!(f, "Command output was on denylist")
+            }
+            RequestCommandOutputResult::TerminalBusy { block_id, .. } => {
+                write!(
+                    f,
+                    "Command was not started: terminal is busy running command {block_id}"
+                )
             }
         }
     }
@@ -651,6 +697,14 @@ pub enum ReadShellCommandOutputResult {
         is_preempted: bool,
         activity: Option<LrcActivity>,
     },
+    ShellRecovered {
+        command: String,
+        block_id: BlockId,
+        output: String,
+        status: ObservedExitStatus,
+        start_ts: Option<DateTime<Local>>,
+        completed_ts: Option<DateTime<Local>>,
+    },
     Cancelled,
     Error(ShellCommandError),
 }
@@ -669,6 +723,12 @@ impl Display for ReadShellCommandOutputResult {
             }
             ReadShellCommandOutputResult::LongRunningCommandSnapshot { .. } => {
                 write!(f, "Sent snapshot of long-running shell command to agent")
+            }
+            ReadShellCommandOutputResult::ShellRecovered { output, status, .. } => {
+                write!(
+                    f,
+                    "Shell command terminated the persistent shell ({status}):\n{output}"
+                )
             }
             ReadShellCommandOutputResult::Cancelled => {
                 write!(f, "Read shell command output cancelled")
@@ -857,6 +917,9 @@ impl AIAgentActionResultType {
             AIAgentActionResultType::WaitForEvents(_) => {
                 "The local watchdog timed out while waiting for inbound events"
             }
+            AIAgentActionResultType::DeniedByHook { .. } => {
+                "The reason an agent hook denied the action"
+            }
         }
     }
 
@@ -881,7 +944,7 @@ impl AIAgentActionResultType {
                 ReadShellCommandOutputResult::CommandFinished { .. }
                 | ReadShellCommandOutputResult::LongRunningCommandSnapshot { .. },
             )
-            | Self::UseComputer(UseComputerResult::Success(_))
+            | Self::UseComputer(UseComputerResult::Success { .. })
             | Self::InsertReviewComments(InsertReviewCommentsResult::Success { .. })
             | Self::RequestComputerUse(RequestComputerUseResult::Approved { .. })
             | Self::StartRecording(StartRecordingResult::Success(_))
@@ -917,9 +980,13 @@ impl AIAgentActionResultType {
             | Self::FileGlobV2(FileGlobV2Result::Error(_))
             | Self::ReadMCPResource(ReadMCPResourceResult::Error(_))
             | Self::CallMCPTool(CallMCPToolResult::Error(_))
+            | Self::ReadSkill(ReadSkillResult::Error(_))
             | Self::ReadDocuments(ReadDocumentsResult::Error(_))
             | Self::EditDocuments(EditDocumentsResult::Error(_))
             | Self::CreateDocuments(CreateDocumentsResult::Error(_))
+            | Self::ReadShellCommandOutput(ReadShellCommandOutputResult::ShellRecovered {
+                ..
+            })
             | Self::UseComputer(UseComputerResult::Error(_))
             | Self::InsertReviewComments(InsertReviewCommentsResult::Error { .. })
             | Self::RequestComputerUse(RequestComputerUseResult::Error(_))
@@ -931,9 +998,8 @@ impl AIAgentActionResultType {
             | Self::TransferShellCommandControlToUser(
                 TransferShellCommandControlToUserResult::Error(_),
             )
-            | Self::RunAgents(RunAgentsResult::Failure { .. } | RunAgentsResult::Denied { .. }) => {
-                true
-            }
+            | Self::RunAgents(RunAgentsResult::Failure { .. } | RunAgentsResult::Denied { .. })
+            | Self::DeniedByHook { .. } => true,
             Self::RunAgents(RunAgentsResult::Launched { agents, .. }) => agents
                 .iter()
                 .all(|agent| matches!(agent.kind, RunAgentsAgentOutcomeKind::Failed { .. })),
@@ -1164,16 +1230,57 @@ impl Display for ReadSkillResult {
 }
 #[derive(Debug, Clone, PartialEq)]
 pub enum UseComputerResult {
-    /// Computer use succeeded, with one result per requested action.
-    Success(computer_use::ActionResult),
+    /// Computer use succeeded. Mirrors the wire `Success` message.
+    Success {
+        screenshot: Option<ScreenshotSource>,
+        cursor_position: Option<computer_use::Vector2I>,
+        /// The on-screen windows, refreshed after the actions ran, so the caller always has a
+        /// fresh list to target next. Empty on platforms without window enumeration.
+        windows: Vec<computer_use::WindowInfo>,
+        /// Metadata about the captured window, populated only when a window target was
+        /// screenshotted, so window-local coordinates map onto the screenshot image.
+        captured_window: Option<computer_use::CapturedWindow>,
+    },
     Error(String),
     Cancelled,
+}
+
+/// Where a computer-use screenshot's bytes live, mirroring the wire's
+/// `RawImage.source` oneof.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ScreenshotSource {
+    /// The bytes are inline on the client.
+    Inline(computer_use::Screenshot),
+    /// The bytes live in Warp-managed object storage and must be fetched via a
+    /// signed URL.
+    Stored {
+        stored_ref: StoredScreenshotRef,
+        /// MIME type of the stored image (e.g. "image/png").
+        mime_type: String,
+        /// The width of the stored image, in pixels.
+        width: i32,
+        /// The height of the stored image, in pixels.
+        height: i32,
+    },
+}
+
+impl UseComputerResult {
+    /// Builds a success result from a locally captured action result, whose
+    /// screenshot bytes (if any) are inline.
+    pub fn success(result: computer_use::ActionResult) -> Self {
+        Self::Success {
+            screenshot: result.screenshot.map(ScreenshotSource::Inline),
+            cursor_position: result.cursor_position,
+            windows: result.windows,
+            captured_window: result.captured_window,
+        }
+    }
 }
 
 impl Display for UseComputerResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            UseComputerResult::Success(_) => write!(f, "Use computer completed"),
+            UseComputerResult::Success { .. } => write!(f, "Use computer completed"),
             UseComputerResult::Error(error) => write!(f, "Use computer error: {error}"),
             UseComputerResult::Cancelled => write!(f, "Use computer cancelled"),
         }

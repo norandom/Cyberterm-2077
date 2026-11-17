@@ -132,13 +132,16 @@ pub(crate) mod driver {
             Unsupported(Harness),
         }
 
-        pub(crate) fn harness_kind(harness: Harness) -> Result<HarnessKind, AgentDriverError> {
+        pub(crate) fn harness_kind(
+            harness: Harness,
+            _transport: warp_cli::agent::HarnessTransport,
+        ) -> Result<HarnessKind, AgentDriverError> {
             match harness {
                 Harness::Oz => Ok(HarnessKind::Oz),
                 Harness::Claude | Harness::Codex | Harness::Gemini => Ok(HarnessKind::ThirdParty(
                     Box::new(DisabledThirdPartyHarness { harness }),
                 )),
-                Harness::OpenCode => Ok(HarnessKind::Unsupported(harness)),
+                Harness::OpenCode | Harness::Pi => Ok(HarnessKind::Unsupported(harness)),
                 Harness::Unknown => Err(AgentDriverError::Unavailable),
             }
         }
@@ -150,6 +153,7 @@ pub(crate) mod driver {
         pub(crate) fn validate_cli_installed(
             _cli: &str,
             _install_docs_url: Option<&str>,
+            _stage: Option<()>,
         ) -> Result<(), AgentDriverError> {
             Err(AgentDriverError::Unavailable)
         }
@@ -160,6 +164,17 @@ pub(crate) mod driver {
             _selected_harness: Harness,
         ) -> HashMap<OsString, OsString> {
             HashMap::new()
+        }
+
+        pub(crate) enum HarnessSupportSkills {
+            Plugin,
+        }
+        pub(crate) fn harness_env_vars(
+            selected_harness: Harness,
+            _transport: warp_cli::agent::HarnessTransport,
+            model_config: Option<&HarnessModelConfig>,
+        ) -> anyhow::Result<(HashMap<OsString, OsString>, Option<tempfile::TempDir>)> {
+            Ok((harness_model_env_vars(selected_harness, model_config), None))
         }
 
         pub(crate) fn harness_model_env_vars(
@@ -209,7 +224,11 @@ pub(crate) mod driver {
 
             pub(crate) fn prepare_claude_environment_config(
                 _working_dir: &Path,
+                _harness_working_dir: &Path,
                 _resolved_env_vars: &HashMap<OsString, OsString>,
+                _skill_dirs: &[PathBuf],
+                _factory_repository_contract: bool,
+                _support_skills: HarnessSupportSkills,
             ) -> anyhow::Result<()> {
                 anyhow::bail!(HOSTED_AGENT_UNAVAILABLE)
             }

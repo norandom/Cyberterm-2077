@@ -9,17 +9,19 @@ use ai::api_keys::{
 use chrono::Local;
 use uuid::Uuid;
 use warp_core::features::FeatureFlag;
-use warp_multi_agent_api::response_event;
-use warpui::{App, SingletonEntity, ViewHandle};
+use warp_graphql::ai::{AgentTaskState, PlatformErrorCode};
+use warp_multi_agent_api::{AgentType, response_event};
+use warpui::{App, ModelHandle, SingletonEntity, ViewHandle};
 
 use super::response_stream::{PendingResume, RecoveryBudget};
 use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::agent::task::TaskId;
 use crate::ai::agent::{
-    AIAgentAttachment, AIAgentContext, AIAgentInput, CancellationReason, ImageContext,
-    PassiveSuggestionTrigger, UserQueryMode,
+    AIAgentAttachment, AIAgentContext, AIAgentInput, BaseUserQuery, CancellationReason,
+    ImageContext, PassiveSuggestionTrigger, UserQueryMode,
 };
 use crate::ai::ambient_agents::AmbientAgentTaskId;
+use crate::ai::blocklist::local_agent_task_sync_model::map_conversation_status_for_test;
 use crate::ai::blocklist::orchestration_events::{
     OrchestrationEventService, PendingEvent, PendingEventDetail,
 };
@@ -30,6 +32,7 @@ use crate::ai::blocklist::{
 use crate::ai::geap_credentials::{GeapPolicy, current_geap_policy_for_any_team};
 use crate::ai::llms::{LLMId, LLMModelHost, LLMProvider};
 use crate::server::ids::ServerId;
+use crate::server::server_api::AIApiError;
 use crate::terminal::TerminalView;
 use crate::test_util::terminal::{
     add_window_with_id_and_terminal, add_window_with_terminal, initialize_app_for_terminal_view,
@@ -65,6 +68,132 @@ fn file_attachment(file_name: &str) -> PendingAttachment {
         file_path: file_name.into(),
         mime_type: "text/plain".to_owned(),
     })
+}
+
+fn register_mock_response_stream(
+    terminal: &ViewHandle<TerminalView>,
+    app: &mut App,
+) -> (AIConversationId, ModelHandle<ResponseStream>) {
+    terminal.update(app, |view, ctx| {
+        let terminal_surface_id = view.id();
+        let stream_id = ResponseStreamId::new_for_test();
+        let conversation_id = BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+            let conversation_id =
+                history.start_new_conversation(terminal_surface_id, false, false, false, ctx);
+            let task_id = history
+                .conversation(&conversation_id)
+                .unwrap()
+                .get_root_task_id()
+                .clone();
+            history
+                .update_conversation_for_new_request_input(
+                    RequestInput {
+                        conversation_id,
+                        input_messages: Vec::from([(task_id, vec![])]),
+                        working_directory: None,
+                        model_id: LLMId::from("test-model"),
+                        coding_model_id: LLMId::from("test-coding-model"),
+                        cli_agent_model_id: LLMId::from("test-cli-agent-model"),
+                        computer_use_model_id: LLMId::from("test-computer-use-model"),
+                        shared_session_response_initiator: None,
+                        request_start_ts: Local::now(),
+                        supported_tools_override: None,
+                    },
+                    stream_id.clone(),
+                    terminal_surface_id,
+                    ctx,
+                )
+                .unwrap();
+            conversation_id
+        });
+        let stream = ctx.add_model(|_| ResponseStream::new_for_test(stream_id.clone()));
+        view.ai_controller().update(ctx, |controller, ctx| {
+            controller.register_mock_stream_for_test(
+                stream_id,
+                conversation_id,
+                stream.clone(),
+                ctx,
+            );
+        });
+        (conversation_id, stream)
+    })
+}
+
+fn stream_init_event(request_id: &str) -> warp_multi_agent_api::ResponseEvent {
+    warp_multi_agent_api::ResponseEvent {
+        r#type: Some(response_event::Type::Init(response_event::StreamInit {
+            request_id: request_id.to_string(),
+            conversation_id: "test-server-conversation".to_string(),
+            run_id: String::new(),
+        })),
+    }
+}
+
+fn stream_client_actions_event() -> warp_multi_agent_api::ResponseEvent {
+    warp_multi_agent_api::ResponseEvent {
+        r#type: Some(response_event::Type::ClientActions(
+            response_event::ClientActions { actions: vec![] },
+        )),
+    }
+}
+
+fn assert_terminal_stream_task_update(
+    app: &App,
+    conversation_id: AIConversationId,
+    expected_state: AgentTaskState,
+    expected_code: PlatformErrorCode,
+) {
+    BlocklistAIHistoryModel::handle(app).read(app, |history, _| {
+        let conversation = history
+            .conversation(&conversation_id)
+            .expect("test conversation must exist");
+        let (state, update) = map_conversation_status_for_test(conversation);
+        assert_eq!(state, expected_state);
+
+        let update = update.expect("terminal stream error must include a task status update");
+        assert_eq!(update.error_code, Some(expected_code));
+        let platform_error = update
+            .platform_error
+            .expect("terminal stream error must include structured platform error data");
+        assert_eq!(platform_error.code, expected_code);
+        assert!(!platform_error.retryable);
+    });
+}
+
+#[test]
+fn transport_failure_classification_is_independent_of_stream_start() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        let (started_conversation_id, started_stream) =
+            register_mock_response_stream(&terminal, &mut app);
+        started_stream.update(&mut app, |stream, ctx| {
+            stream.exhaust_recovery_budget_for_test(ctx);
+            stream.emit_response_event_for_test(stream_client_actions_event(), ctx);
+            stream.emit_error_event_for_test(Arc::new(AIApiError::UnexpectedEof), ctx);
+        });
+        assert_terminal_stream_task_update(
+            &app,
+            started_conversation_id,
+            AgentTaskState::Error,
+            PlatformErrorCode::AgentStreamNetworkError,
+        );
+
+        let (retried_conversation_id, retried_stream) =
+            register_mock_response_stream(&terminal, &mut app);
+        retried_stream.update(&mut app, |stream, ctx| {
+            stream.emit_response_event_for_test(stream_init_event("previous-attempt"), ctx);
+            stream.exhaust_recovery_budget_for_test(ctx);
+            stream.emit_error_event_for_test(Arc::new(AIApiError::UnexpectedEof), ctx);
+        });
+        assert_terminal_stream_task_update(
+            &app,
+            retried_conversation_id,
+            AgentTaskState::Error,
+            PlatformErrorCode::AgentStreamNetworkError,
+        );
+    });
 }
 
 #[test]
@@ -158,6 +287,7 @@ fn input_for_query_converts_prompt_attachments_and_ignores_live_staging() {
                 None,
                 UserQueryMode::Normal,
                 None,
+                None,
                 HashMap::new(),
                 prompt_attachments,
                 context_model.as_ref(ctx),
@@ -203,6 +333,71 @@ fn input_for_query_converts_prompt_attachments_and_ignores_live_staging() {
             assert!(referenced_attachments.contains_key("notes.txt"));
             assert!(referenced_attachments.contains_key("notes.txt (1)"));
             assert!(!referenced_attachments.contains_key("live.txt"));
+        });
+    });
+}
+
+#[test]
+fn input_for_query_seeds_query_mode_and_agent_from_the_base() {
+    // A base carried by a shared-session prompt is authoritative for what it set: the input's
+    // rendered text, mode, and agent come from it (normalized like typed text), the client's
+    // resolved attachments still ride along, and the base is kept for the outgoing request.
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        terminal.update(&mut app, |terminal, ctx| {
+            let conversation_id =
+                BlocklistAIHistoryModel::handle(ctx).update(ctx, |history_model, ctx| {
+                    history_model.start_new_conversation(terminal.id(), false, false, false, ctx)
+                });
+            let controller = terminal.ai_controller();
+            let context_model = controller.as_ref(ctx).context_model.clone();
+            let active_session = controller.as_ref(ctx).active_session.clone();
+            let task_id = TaskId::new("test-task".to_owned());
+
+            let base = BaseUserQuery::from_proto(warp_multi_agent_api::request::input::UserQuery {
+                query: "/plan from the server".to_owned(),
+                intended_agent: AgentType::Cli.into(),
+                ..Default::default()
+            });
+            let additional_attachments = HashMap::from([(
+                "notes.md".to_owned(),
+                AIAgentAttachment::PlainText("downloaded".to_owned()),
+            )]);
+
+            let input = super::input_for_query(
+                "from the prompt".to_owned(),
+                &task_id,
+                conversation_id,
+                None,
+                UserQueryMode::Normal,
+                None,
+                Some(base.clone()),
+                additional_attachments,
+                vec![],
+                context_model.as_ref(ctx),
+                active_session.as_ref(ctx),
+                ctx,
+            );
+
+            let AIAgentInput::UserQuery {
+                query,
+                user_query_mode,
+                intended_agent,
+                referenced_attachments,
+                base: input_base,
+                ..
+            } = input
+            else {
+                panic!("expected UserQuery");
+            };
+
+            assert_eq!(query, "from the server");
+            assert_eq!(user_query_mode, UserQueryMode::Plan);
+            assert_eq!(intended_agent, Some(AgentType::Cli));
+            assert!(referenced_attachments.contains_key("notes.md"));
+            assert_eq!(input_base, Some(base));
         });
     });
 }
@@ -258,67 +453,10 @@ fn mock_response_stream_updates_history_through_controller() {
             });
         });
 
-        let (conversation_id, stream) = terminal.update(&mut app, |view, ctx| {
-            let terminal_surface_id = view.id();
-            let stream_id = ResponseStreamId::new_for_test();
-            let conversation_id =
-                BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
-                    let conversation_id = history.start_new_conversation(
-                        terminal_surface_id,
-                        false,
-                        false,
-                        false,
-                        ctx,
-                    );
-                    let task_id = history
-                        .conversation(&conversation_id)
-                        .unwrap()
-                        .get_root_task_id()
-                        .clone();
-                    history
-                        .update_conversation_for_new_request_input(
-                            RequestInput {
-                                conversation_id,
-                                input_messages: HashMap::from([(task_id, vec![])]),
-                                working_directory: None,
-                                model_id: LLMId::from("test-model"),
-                                coding_model_id: LLMId::from("test-coding-model"),
-                                cli_agent_model_id: LLMId::from("test-cli-agent-model"),
-                                computer_use_model_id: LLMId::from("test-computer-use-model"),
-                                shared_session_response_initiator: None,
-                                request_start_ts: Local::now(),
-                                supported_tools_override: None,
-                            },
-                            stream_id.clone(),
-                            terminal_surface_id,
-                            ctx,
-                        )
-                        .unwrap();
-                    conversation_id
-                });
-            let stream = ctx.add_model(|_| ResponseStream::new_for_test(stream_id.clone()));
-            view.ai_controller().update(ctx, |controller, ctx| {
-                controller.register_mock_stream_for_test(
-                    stream_id,
-                    conversation_id,
-                    stream.clone(),
-                    ctx,
-                );
-            });
-            (conversation_id, stream)
-        });
+        let (conversation_id, stream) = register_mock_response_stream(&terminal, &mut app);
 
         stream.update(&mut app, |stream, ctx| {
-            stream.emit_response_event_for_test(
-                warp_multi_agent_api::ResponseEvent {
-                    r#type: Some(response_event::Type::Init(response_event::StreamInit {
-                        request_id: "test-request".to_string(),
-                        conversation_id: "test-server-conversation".to_string(),
-                        run_id: String::new(),
-                    })),
-                },
-                ctx,
-            );
+            stream.emit_response_event_for_test(stream_init_event("test-request"), ctx);
             stream.emit_response_event_for_test(
                 warp_multi_agent_api::ResponseEvent {
                     r#type: Some(response_event::Type::Finished(
@@ -363,6 +501,73 @@ fn mock_response_stream_updates_history_through_controller() {
     });
 }
 
+#[test]
+fn explicit_stream_finished_failures_are_classified_without_init() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        let cases = [
+            (
+                response_event::stream_finished::Reason::Other(Default::default()),
+                AgentTaskState::Error,
+                PlatformErrorCode::AgentStreamFailure,
+            ),
+            (
+                response_event::stream_finished::Reason::LlmUnavailable(Default::default()),
+                AgentTaskState::Error,
+                PlatformErrorCode::AgentStreamFailure,
+            ),
+            (
+                response_event::stream_finished::Reason::ChatgptSubscriptionError(
+                    response_event::stream_finished::ChatGptSubscriptionError {
+                        message: "subscription limit reached".to_owned(),
+                        ..Default::default()
+                    },
+                ),
+                AgentTaskState::Failed,
+                PlatformErrorCode::InvalidRequest,
+            ),
+            (
+                response_event::stream_finished::Reason::InternalError(
+                    response_event::stream_finished::InternalError {
+                        message: "server stream failure".to_owned(),
+                    },
+                ),
+                AgentTaskState::Error,
+                PlatformErrorCode::AgentStreamFailure,
+            ),
+        ];
+        for (reason, expected_state, expected_code) in cases {
+            let (conversation_id, stream) = register_mock_response_stream(&terminal, &mut app);
+            stream.update(&mut app, |stream, ctx| {
+                stream.emit_response_event_for_test(
+                    warp_multi_agent_api::ResponseEvent {
+                        r#type: Some(response_event::Type::Finished(
+                            response_event::StreamFinished {
+                                reason: Some(reason),
+                                conversation_usage_metadata: None,
+                                token_usage: vec![],
+                                should_refresh_model_config: false,
+                                #[allow(deprecated)]
+                                request_cost: None,
+                                request_charges: None,
+                            },
+                        )),
+                    },
+                    ctx,
+                );
+            });
+            assert_terminal_stream_task_update(
+                &app,
+                conversation_id,
+                expected_state,
+                expected_code,
+            );
+        }
+    });
+}
+
 /// When an agent command exits the shell, the conversation must be finalized as
 /// `Error` (not `Cancelled`), and a subsequent `ManuallyCancelled` (as fired by
 /// the pane-close path) must not overwrite that failure.
@@ -393,7 +598,7 @@ fn fail_conversation_due_to_shell_exit_reports_error_and_survives_manual_cancel(
                         .update_conversation_for_new_request_input(
                             RequestInput {
                                 conversation_id,
-                                input_messages: HashMap::from([(task_id, vec![])]),
+                                input_messages: Vec::from([(task_id, vec![])]),
                                 working_directory: None,
                                 model_id: LLMId::from("test-model"),
                                 coding_model_id: LLMId::from("test-coding-model"),
@@ -482,7 +687,7 @@ fn optimistic_cli_subagent_completion_with_in_flight_stream_reports_success() {
                         .update_conversation_for_new_request_input(
                             RequestInput {
                                 conversation_id,
-                                input_messages: HashMap::from([(task_id, vec![])]),
+                                input_messages: Vec::from([(task_id, vec![])]),
                                 working_directory: None,
                                 model_id: LLMId::from("test-model"),
                                 coding_model_id: LLMId::from("test-coding-model"),
@@ -593,6 +798,7 @@ fn workspace_for_test(teams: Vec<Team>) -> Workspace {
         name: "test".to_owned(),
         stripe_customer_id: None,
         teams,
+        open_teams: vec![],
         billing_metadata: Default::default(),
         bonus_grants_purchased_this_month: Default::default(),
         billing_cycle_usage: None,
@@ -871,4 +1077,290 @@ fn passive_suggestions_request_params_scope_member_byo_credentials_by_the_window
             "the restrictive team's decision must be recorded on the params"
         );
     });
+}
+
+mod hooks {
+    use ai::hooks::test_util::{test_binding, test_source_id};
+    use ai::hooks::{FollowUpChainId, HookBoundary, HookPayload, PromptProvenance, TurnStopStatus};
+    use warpui::{App, SingletonEntity};
+
+    use super::{register_mock_response_stream, stream_init_event};
+    use crate::ai::agent::AIAgentInput;
+    use crate::ai::agent::conversation::{AIConversationId, ConversationStatus};
+    use crate::ai::blocklist::hooks::HookRuntime;
+    use crate::ai::blocklist::hooks::test_utils::{
+        TestHooks, create_task_with_messages, done_event, exchange_count, install_test_hooks,
+        let_background_work_settle, root_task_id, settle, shell_tool_call_message, text_message,
+    };
+    use crate::ai::blocklist::{
+        BlocklistAIHistoryModel, QueuedQuery, QueuedQueryModel, QueuedQueryOrigin,
+    };
+    use crate::test_util::terminal::{add_window_with_terminal, initialize_app_for_terminal_view};
+
+    /// Hooks installed for every boundary the controller fires, so a missing call shows up as a
+    /// missing envelope rather than an inactive boundary.
+    fn install_controller_hooks(app: &mut App) -> TestHooks {
+        let hooks = app.update(install_test_hooks);
+        let source = test_source_id("controller");
+        app.update(|ctx| {
+            hooks.install_bindings(
+                vec![
+                    test_binding(source.clone(), HookBoundary::PromptSubmit, 0, None),
+                    test_binding(source.clone(), HookBoundary::ResponseComplete, 0, None),
+                    test_binding(source, HookBoundary::TurnStop, 0, None),
+                ],
+                ctx,
+            )
+        });
+        hooks
+    }
+
+    /// One line per encoded envelope: the boundary plus the payload detail a test cares about.
+    fn fired(hooks: &TestHooks) -> Vec<(AIConversationId, String)> {
+        hooks
+            .adapter
+            .encoded_envelopes()
+            .iter()
+            .map(|envelope| {
+                let detail = match &envelope.payload {
+                    HookPayload::PromptSubmit { text, .. } => format!("prompt.submit:{text}"),
+                    HookPayload::ResponseComplete { text, .. } => {
+                        format!("response.complete:{text}")
+                    }
+                    HookPayload::TurnStop { status, .. } => format!("turn.stop:{status:?}"),
+                    HookPayload::SessionStart { .. }
+                    | HookPayload::ToolPre { .. }
+                    | HookPayload::ToolResult { .. }
+                    | HookPayload::ToolFailure { .. }
+                    | HookPayload::ReasoningComplete { .. } => {
+                        envelope.boundary().canonical_name().to_owned()
+                    }
+                };
+                (envelope.conversation_id, detail)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_typed_prompt_fires_prompt_submit_and_a_custom_input_does_not() {
+        App::test((), |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            let hooks = install_controller_hooks(&mut app);
+            let terminal = add_window_with_terminal(&mut app, None);
+
+            let conversation_id = terminal.update(&mut app, |terminal, ctx| {
+                let conversation_id =
+                    BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+                        history.start_new_conversation(terminal.id(), false, false, false, ctx)
+                    });
+                terminal.ai_controller().update(ctx, |controller, ctx| {
+                    controller.send_user_query_in_conversation(
+                        "hello hooks".to_owned(),
+                        conversation_id,
+                        None,
+                        ctx,
+                    );
+                });
+                conversation_id
+            });
+            settle(&mut app, |_| !fired(&hooks).is_empty()).await;
+            assert_eq!(
+                fired(&hooks),
+                vec![(conversation_id, "prompt.submit:hello hooks".to_owned())]
+            );
+
+            // A custom input is not something the user typed, so it is not a prompt.
+            terminal.update(&mut app, |terminal, ctx| {
+                terminal.ai_controller().update(ctx, |controller, ctx| {
+                    controller.send_custom_ai_input_query(
+                        AIAgentInput::ResumeConversation {
+                            context: std::sync::Arc::from(Vec::new()),
+                        },
+                        ctx,
+                    );
+                });
+            });
+            let_background_work_settle(&mut app).await;
+            assert_eq!(fired(&hooks).len(), 1, "{:?}", fired(&hooks));
+        });
+    }
+
+    #[test]
+    fn a_clean_stream_end_with_no_actions_fires_response_complete_and_turn_stop() {
+        App::test((), |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            let hooks = install_controller_hooks(&mut app);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let (conversation_id, stream) = register_mock_response_stream(&terminal, &mut app);
+            let task_id = root_task_id(&app, conversation_id);
+
+            stream.update(&mut app, |stream, ctx| {
+                stream.emit_response_event_for_test(stream_init_event("request"), ctx);
+                stream.emit_response_event_for_test(
+                    create_task_with_messages(&task_id, vec![text_message(&task_id, "All done.")]),
+                    ctx,
+                );
+                stream.emit_response_event_for_test(done_event(), ctx);
+                stream.emit_after_stream_finished_for_test(ctx);
+            });
+
+            settle(&mut app, |_| fired(&hooks).len() == 2).await;
+            let mut lines = fired(&hooks);
+            lines.sort_by(|a, b| a.1.cmp(&b.1));
+            assert_eq!(
+                lines,
+                vec![
+                    (conversation_id, "response.complete:All done.".to_owned()),
+                    (
+                        conversation_id,
+                        format!("turn.stop:{:?}", TurnStopStatus::Completed)
+                    ),
+                ]
+            );
+        });
+    }
+
+    #[test]
+    fn a_stream_that_queues_a_tool_call_does_not_fire_turn_stop() {
+        App::test((), |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            let hooks = install_controller_hooks(&mut app);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let (conversation_id, stream) = register_mock_response_stream(&terminal, &mut app);
+            let task_id = root_task_id(&app, conversation_id);
+
+            stream.update(&mut app, |stream, ctx| {
+                stream.emit_response_event_for_test(stream_init_event("request"), ctx);
+                stream.emit_response_event_for_test(
+                    create_task_with_messages(
+                        &task_id,
+                        vec![
+                            text_message(&task_id, "Let me look."),
+                            shell_tool_call_message(&task_id, "ls"),
+                        ],
+                    ),
+                    ctx,
+                );
+                stream.emit_response_event_for_test(done_event(), ctx);
+                stream.emit_after_stream_finished_for_test(ctx);
+            });
+
+            settle(&mut app, |_| !fired(&hooks).is_empty()).await;
+            let_background_work_settle(&mut app).await;
+            assert_eq!(
+                fired(&hooks),
+                vec![(conversation_id, "response.complete:Let me look.".to_owned())],
+                "the turn is still open while the tool call waits"
+            );
+        });
+    }
+
+    /// An Oz-bound conversation steers the queue's head into its next tool-result request. A
+    /// prompt a stop hook asked for must not take that shortcut: it starts a turn of its own, so
+    /// it runs the prompt hooks and gets a turn id.
+    #[test]
+    fn a_hook_follow_up_at_the_queue_head_is_not_steered_into_a_running_turn() {
+        App::test((), |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            let hooks = install_controller_hooks(&mut app);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let controller = terminal.read(&app, |terminal, _| terminal.ai_controller().clone());
+            let stop = test_binding(test_source_id("stop"), HookBoundary::TurnStop, 0, None);
+            let follow_up = QueuedQuery::new_hook_follow_up(
+                "keep going".to_owned(),
+                PromptProvenance::HookFollowUp {
+                    binding: stop.id.clone(),
+                    chain_id: FollowUpChainId::new(),
+                },
+            );
+
+            let (conversation_id, task_id) = controller.update(&mut app, |controller, ctx| {
+                let conversation_id = controller.bind_native_prompt_conversation(None, ctx);
+                controller.send_user_query_in_conversation(
+                    "initial".to_owned(),
+                    conversation_id,
+                    None,
+                    ctx,
+                );
+                let task_id = BlocklistAIHistoryModel::as_ref(ctx)
+                    .conversation(&conversation_id)
+                    .unwrap()
+                    .get_root_task_id()
+                    .clone();
+                QueuedQueryModel::handle(ctx).update(ctx, |queue, ctx| {
+                    queue.append(
+                        conversation_id,
+                        QueuedQuery::new(
+                            "a person's".to_owned(),
+                            QueuedQueryOrigin::QueueSlashCommand,
+                        ),
+                        ctx,
+                    );
+                    queue.append(conversation_id, follow_up, ctx);
+                });
+                (conversation_id, task_id)
+            });
+            // The initial prompt waits for its hooks; its request going out ends native setup.
+            settle(&mut app, |app| exchange_count(app, conversation_id) == 1).await;
+            assert_eq!(fired(&hooks)[0].1, "prompt.submit:initial");
+
+            controller.update(&mut app, |controller, ctx| {
+                // The person's row steers into the running turn as before.
+                let steered =
+                    controller.steer_head_prompt_for_request(conversation_id, &task_id, true, ctx);
+                assert!(matches!(
+                    steered,
+                    Some(AIAgentInput::UserQuery { query, .. }) if query == "a person's"
+                ));
+                // The hook's row does not: it stays queued for a turn of its own.
+                assert!(
+                    controller
+                        .steer_head_prompt_for_request(conversation_id, &task_id, true, ctx)
+                        .is_none()
+                );
+                let queued = QueuedQueryModel::as_ref(ctx).queue(conversation_id);
+                assert_eq!(queued.len(), 1);
+                assert_eq!(queued[0].origin(), QueuedQueryOrigin::HookFollowUp);
+            });
+            assert_eq!(
+                fired(&hooks).len(),
+                1,
+                "no prompt hook ran for the steered row"
+            );
+
+            // Once the turn is over, the row leaves through the prompt path: it runs the prompt
+            // hooks with its provenance and its own turn id.
+            let first_turn = app.read(|ctx| HookRuntime::as_ref(ctx).turn_id_for(conversation_id));
+            controller.update(&mut app, |controller, ctx| {
+                for stream_id in controller
+                    .in_flight_response_streams
+                    .stream_ids_for_conversation(conversation_id, ctx)
+                {
+                    controller
+                        .in_flight_response_streams
+                        .cleanup_stream(&stream_id);
+                }
+                BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, _| {
+                    history
+                        .conversation_mut(&conversation_id)
+                        .unwrap()
+                        .set_status_for_test(ConversationStatus::Success);
+                });
+                controller.dispatch_queued_warp_agent_prompt(conversation_id, None, ctx);
+            });
+            settle(&mut app, |_| fired(&hooks).len() == 2).await;
+            let envelope = hooks.adapter.encoded_envelopes()[1].clone();
+            assert!(matches!(
+                &envelope.payload,
+                HookPayload::PromptSubmit { text, provenance, .. }
+                    if text == "keep going"
+                        && matches!(provenance, PromptProvenance::HookFollowUp { binding, .. } if *binding == stop.id)
+            ));
+            assert!(envelope.turn_id.is_some());
+            assert_ne!(envelope.turn_id, first_turn);
+            QueuedQueryModel::handle(&app).read(&app, |queue, _| {
+                assert!(!queue.has_queue(conversation_id));
+            });
+        });
+    }
 }

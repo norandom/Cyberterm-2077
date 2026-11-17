@@ -17,7 +17,9 @@ use warpui::elements::{
 };
 use warpui::fonts::{FamilyId, FontInfo, Weight};
 use warpui::keymap::{ContextPredicate, FixedBinding};
-use warpui::platform::{Cursor, FilePickerConfiguration, GraphicsBackend, SystemTheme};
+use warpui::platform::{
+    Cursor, FilePickerConfiguration, GraphicsBackend, SystemTheme, WindowBackdrop,
+};
 use warpui::rendering::ThinStrokes;
 use warpui::ui_components::button::ButtonVariant;
 use warpui::ui_components::components::{Coords, UiComponent, UiComponentStyles};
@@ -84,7 +86,7 @@ use crate::util::bindings;
 use crate::view_components::action_button::{ActionButton, ButtonSize, NakedTheme};
 use crate::view_components::{Dropdown, DropdownItem, FilterableDropdown};
 use crate::window_settings::{
-    BackgroundBlurRadius, BackgroundBlurTexture, BackgroundOpacity, LeftPanelVisibilityAcrossTabs,
+    BackgroundBackdrop, BackgroundBlurRadius, BackgroundOpacity, LeftPanelVisibilityAcrossTabs,
     OpenWindowsAtCustomSize, WindowSettings, WindowSettingsChangedEvent, ZoomLevel,
 };
 use crate::workspace::WorkspaceAction;
@@ -270,15 +272,6 @@ pub fn init_actions_from_parent_view<T: Action + Clone>(
         )),
         context,
         flags::OPEN_WINDOWS_AT_CUSTOM_SIZE_FLAG,
-    ));
-
-    toggle_binding_pairs.push(ToggleSettingActionPair::new(
-        "window blur acrylic texture",
-        builder(SettingsAction::AppearancePageToggle(
-            AppearancePageAction::ToggleBlurTexture,
-        )),
-        context,
-        flags::WINDOW_BLUR_TEXTURE_FLAG,
     ));
 
     toggle_binding_pairs.push(ToggleSettingActionPair::new(
@@ -513,7 +506,7 @@ pub enum AppearancePageAction {
     ToggleHideTitleBarSearchBarInVerticalTabs,
     ToggleUseLatestUserPromptAsConversationTitleInTabNames,
     ToggleLigatureRendering,
-    ToggleBlurTexture,
+    SetWindowBackdrop(WindowBackdrop),
     ToggleLeftPanelVisibility,
     ToggleToolsPanelProjectExplorer,
     ToggleToolsPanelGlobalSearch,
@@ -535,7 +528,6 @@ pub enum AppearancePageAction {
     RemoveDefaultDirectoryTabColor {
         path: PathBuf,
     },
-    SetUsageDisplayUnit(UsageDisplayUnit),
 }
 
 pub struct AppearanceSettingsPageView {
@@ -557,8 +549,8 @@ pub struct AppearanceSettingsPageView {
     #[allow(dead_code)]
     thin_strokes_dropdown: ViewHandle<Dropdown<AppearancePageAction>>,
     enforce_min_contrast_dropdown: ViewHandle<Dropdown<AppearancePageAction>>,
-    usage_display_unit_dropdown: ViewHandle<Dropdown<AppearancePageAction>>,
     input_mode_dropdown: ViewHandle<Dropdown<AppearancePageAction>>,
+    window_backdrop_dropdown: ViewHandle<Dropdown<AppearancePageAction>>,
     input_type_radio_state: RadioButtonStateHandle,
     app_icon_dropdown: ViewHandle<Dropdown<AppearancePageAction>>,
     workspace_decorations_dropdown: ViewHandle<Dropdown<AppearancePageAction>>,
@@ -635,12 +627,6 @@ impl TypedActionView for AppearanceSettingsPageView {
             SetWorkspaceDecorationVisibility(value) => {
                 self.set_workspace_decoration_visibility(*value, ctx)
             }
-            SetUsageDisplayUnit(value) => {
-                AISettings::handle(ctx).update(ctx, |settings, ctx| {
-                    report_if_error!(settings.usage_display_unit.set_value(*value, ctx));
-                });
-                ctx.notify();
-            }
             ToggleWorkspaceDecorationVisibility => self.toggle_workspace_decoration_visiblity(ctx),
             ToggleJumpToBottomOfBlockButton => self.toggle_jump_to_bottom_of_block_button(ctx),
             ToggleShowBlockDividers => self.toggle_show_block_dividers(ctx),
@@ -660,7 +646,7 @@ impl TypedActionView for AppearanceSettingsPageView {
                 });
                 ctx.notify();
             }
-            ToggleBlurTexture => self.toggle_blur_texture(ctx),
+            SetWindowBackdrop(backdrop) => self.set_window_backdrop(*backdrop, ctx),
             ToggleLeftPanelVisibility => self.toggle_left_panel_visibility(ctx),
             ToggleToolsPanelProjectExplorer => {
                 CodeSettings::handle(ctx).update(ctx, |settings, ctx| {
@@ -1041,6 +1027,15 @@ impl AppearanceSettingsPageView {
                     // Reset the slider state so that it uses the current opacity value on the next render.
                     me.blur_state.reset_offset();
                 }
+                WindowSettingsChangedEvent::BackgroundBackdrop { .. } => {
+                    let backdrop = *WindowSettings::as_ref(ctx).background_backdrop;
+                    me.window_backdrop_dropdown.update(ctx, |dropdown, ctx| {
+                        dropdown.set_selected_by_action(
+                            AppearancePageAction::SetWindowBackdrop(backdrop),
+                            ctx,
+                        );
+                    });
+                }
                 WindowSettingsChangedEvent::ZoomLevel { .. } => {
                     let zoom_level = *WindowSettings::as_ref(ctx).zoom_level;
 
@@ -1065,19 +1060,6 @@ impl AppearanceSettingsPageView {
         // we need to update the switch if the setting gets changed elsewhere, like command palette
         ctx.subscribe_to_model(&AppEditorSettings::handle(ctx), |_, _, _, ctx| {
             ctx.notify();
-        });
-
-        ctx.subscribe_to_model(&AISettings::handle(ctx), |me, _, event, ctx| {
-            if matches!(event, AISettingsChangedEvent::UsageDisplayUnit { .. }) {
-                let current_value = AISettings::as_ref(ctx).usage_display_unit;
-                me.usage_display_unit_dropdown.update(ctx, |dropdown, ctx| {
-                    dropdown.set_selected_by_action(
-                        AppearancePageAction::SetUsageDisplayUnit(current_value),
-                        ctx,
-                    );
-                });
-                ctx.notify();
-            }
         });
 
         let line_height_editor = Self::editor(
@@ -1314,37 +1296,6 @@ impl AppearanceSettingsPageView {
             dropdown
         });
 
-        let usage_display_unit_dropdown = ctx.add_typed_action_view(|ctx| {
-            let mut dropdown = Dropdown::new(ctx);
-
-            let values = vec![UsageDisplayUnit::Credits, UsageDisplayUnit::Dollars];
-            let current_value = AISettings::as_ref(ctx).usage_display_unit;
-            let selected_index = values
-                .iter()
-                .position(|val| *val == current_value)
-                .unwrap_or_else(|| {
-                    report_error!(
-                        "Could not find current UsageDisplayUnit value in dropdown option list"
-                    );
-                    0
-                });
-
-            dropdown.add_items(
-                values
-                    .into_iter()
-                    .map(|val| {
-                        DropdownItem::new(
-                            val.display_name(),
-                            AppearancePageAction::SetUsageDisplayUnit(val),
-                        )
-                    })
-                    .collect(),
-                ctx,
-            );
-            dropdown.set_selected_by_index(selected_index, ctx);
-            dropdown
-        });
-
         let context_chips = Self::get_context_chip_renderers(ctx);
 
         let alt_screen_padding_editor = {
@@ -1394,10 +1345,10 @@ impl AppearanceSettingsPageView {
             font_weight_dropdown,
             thin_strokes_dropdown,
             input_mode_dropdown,
+            window_backdrop_dropdown: Self::build_window_backdrop_dropdown(ctx),
             input_type_radio_state,
             app_icon_dropdown,
             enforce_min_contrast_dropdown,
-            usage_display_unit_dropdown,
             workspace_decorations_dropdown: Self::build_workspace_decoration_visibility_dropdown(
                 ctx,
             ),
@@ -1458,10 +1409,10 @@ impl AppearanceSettingsPageView {
             window_settings_widgets.push(Box::new(WindowBlurWidget::default()));
         }
         if window_settings
-            .background_blur_texture
+            .background_backdrop
             .is_supported_on_current_platform()
         {
-            window_settings_widgets.push(Box::new(WindowBlurTextureWidget::default()));
+            window_settings_widgets.push(Box::new(WindowBackdropWidget));
         }
 
         if FeatureFlag::UIZoom.is_enabled() {
@@ -1615,11 +1566,6 @@ impl AppearanceSettingsPageView {
         categories.push(Category::new(
             "Full-screen Apps",
             vec![Box::new(AltScreenPaddingWidget::default())],
-        ));
-
-        categories.push(Category::new(
-            "Usage",
-            vec![Box::new(UsageDisplayUnitWidget::default())],
         ));
 
         PageType::new_categorized(categories, None)
@@ -2400,18 +2346,9 @@ impl AppearanceSettingsPageView {
         });
     }
 
-    pub fn toggle_blur_texture(&mut self, ctx: &mut ViewContext<Self>) {
-        let blur_enabled = WindowSettings::handle(ctx).read(ctx, |window_settings, _ctx| {
-            *window_settings.background_blur_texture.value()
-        });
-        ctx.windows()
-            .set_all_windows_background_blur_texture(!blur_enabled);
+    fn set_window_backdrop(&mut self, backdrop: WindowBackdrop, ctx: &mut ViewContext<Self>) {
         WindowSettings::handle(ctx).update(ctx, |window_settings, ctx| {
-            report_if_error!(
-                window_settings
-                    .background_blur_texture
-                    .toggle_and_save_value(ctx)
-            );
+            report_if_error!(window_settings.background_backdrop.set_value(backdrop, ctx));
         });
         ctx.notify();
     }
@@ -2657,6 +2594,41 @@ impl AppearanceSettingsPageView {
         );
     }
 
+    fn build_window_backdrop_dropdown(
+        ctx: &mut ViewContext<Self>,
+    ) -> ViewHandle<Dropdown<AppearancePageAction>> {
+        ctx.add_typed_action_view(|ctx| {
+            let mut dropdown = Dropdown::new(ctx);
+            dropdown.set_items(
+                WindowBackdrop::ALL
+                    .into_iter()
+                    .map(|backdrop| {
+                        DropdownItem::new(
+                            Self::window_backdrop_dropdown_item_label(backdrop),
+                            AppearancePageAction::SetWindowBackdrop(backdrop),
+                        )
+                    })
+                    .collect(),
+                ctx,
+            );
+            dropdown.set_selected_by_action(
+                AppearancePageAction::SetWindowBackdrop(
+                    *WindowSettings::as_ref(ctx).background_backdrop,
+                ),
+                ctx,
+            );
+            dropdown
+        })
+    }
+
+    fn window_backdrop_dropdown_item_label(backdrop: WindowBackdrop) -> &'static str {
+        match backdrop {
+            WindowBackdrop::None => "No material",
+            WindowBackdrop::Mica => "Mica",
+            WindowBackdrop::Acrylic => "Acrylic",
+            WindowBackdrop::MicaAlt => "Mica Alt",
+        }
+    }
     fn build_workspace_decoration_visibility_dropdown(
         ctx: &mut ViewContext<Self>,
     ) -> ViewHandle<Dropdown<AppearancePageAction>> {
@@ -3516,16 +3488,13 @@ impl SettingsWidget for WindowBlurWidget {
     }
 }
 
-#[derive(Default)]
-struct WindowBlurTextureWidget {
-    switch_state: SwitchStateHandle,
-}
+struct WindowBackdropWidget;
 
-impl SettingsWidget for WindowBlurTextureWidget {
+impl SettingsWidget for WindowBackdropWidget {
     type View = AppearanceSettingsPageView;
 
     fn search_terms(&self) -> &str {
-        "window blur texture acrylic"
+        "window backdrop material blur acrylic mica"
     }
 
     fn render(
@@ -3534,29 +3503,20 @@ impl SettingsWidget for WindowBlurTextureWidget {
         appearance: &Appearance,
         app: &AppContext,
     ) -> Box<dyn Element> {
-        let window_settings = WindowSettings::as_ref(app);
-        let use_blur_texture = *window_settings.background_blur_texture;
-        let mut col = Flex::column().with_child(render_body_item::<AppearancePageAction>(
-            "Use Window Blur (Acrylic texture)".to_string(),
+        let mut col = Flex::column().with_child(render_dropdown_item(
+            appearance,
+            "Window backdrop",
+            (*WindowSettings::as_ref(app).background_opacity == BackgroundOpacity::MAX)
+                .then_some("Backdrop is not visible at opacity 100%"),
             None,
             LocalOnlyIconState::for_setting(
-                BackgroundBlurTexture::storage_key(),
-                BackgroundBlurTexture::sync_to_cloud(),
+                BackgroundBackdrop::storage_key(),
+                BackgroundBackdrop::sync_to_cloud(),
                 &mut view.local_only_icon_tooltip_states.borrow_mut(),
                 app,
             ),
-            ToggleState::Enabled,
-            appearance,
-            appearance
-                .ui_builder()
-                .switch(self.switch_state.clone())
-                .check(use_blur_texture)
-                .build()
-                .on_click(|evt_ctx, _app, _v2f| {
-                    evt_ctx.dispatch_typed_action(AppearancePageAction::ToggleBlurTexture);
-                })
-                .finish(),
             None,
+            &view.window_backdrop_dropdown,
         ));
         if let Some(window) = app.windows().platform_window(view.window_id)
             && !window.supports_transparency()
@@ -4729,43 +4689,6 @@ impl SettingsWidget for MinimumContrastWidget {
             ),
             None,
             &view.enforce_min_contrast_dropdown,
-        )
-    }
-}
-
-#[derive(Default)]
-struct UsageDisplayUnitWidget {}
-
-impl SettingsWidget for UsageDisplayUnitWidget {
-    type View = AppearanceSettingsPageView;
-
-    fn search_terms(&self) -> &str {
-        "usage credits dollars cost spend display unit pricing transparency"
-    }
-
-    fn should_render(&self, _app: &AppContext) -> bool {
-        FeatureFlag::PricingTransparency.is_enabled()
-    }
-
-    fn render(
-        &self,
-        view: &Self::View,
-        appearance: &Appearance,
-        app: &AppContext,
-    ) -> Box<dyn Element> {
-        render_dropdown_item(
-            appearance,
-            "Usage display unit",
-            Some("Select the unit for usage and spend amounts."),
-            None,
-            LocalOnlyIconState::for_setting(
-                UsageDisplayUnit::storage_key(),
-                UsageDisplayUnit::sync_to_cloud(),
-                &mut view.local_only_icon_tooltip_states.borrow_mut(),
-                app,
-            ),
-            None,
-            &view.usage_display_unit_dropdown,
         )
     }
 }

@@ -12,50 +12,72 @@ concurrency:
   cancel-in-progress: true
 jobs:
   build:
-    name: ${{ matrix.platform }} x86-64
+    name: ${{ matrix.platform }} ${{ matrix.arch }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-24.04
             platform: linux
+            arch: x86_64
+            host: x86_64-unknown-linux-gnu
           - os: windows-2022
             platform: windows
+            arch: x86_64
+            host: x86_64-pc-windows-msvc
+          - os: macos-15
+            platform: macos
+            arch: aarch64
+            host: aarch64-apple-darwin
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180
     env:
-      CARGO_BUILD_JOBS: '2'
+      CARGO_BUILD_JOBS: ${{ matrix.platform == 'macos' && '1' || '2' }}
       CARGO_FULL_PROFILE: release-desktop
       CARGO_BIN_NAME: warpeer
       WARP_APP_NAME: Warpeer
       GIT_RELEASE_TAG: ${{ github.ref_name }}
-      LIBCLANG_PATH: ${{ matrix.platform == 'windows' && 'C:\Program Files\LLVM\bin' || '/usr/lib/llvm-18/lib' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Linux build dependencies
         if: runner.os == 'Linux'
         run: |
+          echo "LIBCLANG_PATH=/usr/lib/llvm-18/lib" >> "$GITHUB_ENV"
           sudo apt-get update
           sudo apt-get install -y build-essential cmake pkg-config protobuf-compiler libssl-dev libfreetype-dev libexpat1-dev libgit2-dev libfontconfig1-dev libasound2-dev libclang-18-dev libxkbcommon-dev libwayland-dev libxcb1-dev libx11-dev libxi-dev libxcursor-dev
       - name: Windows build dependencies
         if: runner.os == 'Windows'
         shell: pwsh
-        run: choco install protoc --yes --no-progress
+        run: |
+          choco install protoc --yes --no-progress
+          "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
+      - name: macOS build dependencies
+        if: runner.os == 'macOS'
+        run: |
+          brew install protobuf llvm pkg-config brotli
+          echo "LIBCLANG_PATH=$(brew --prefix llvm)/lib" >> "$GITHUB_ENV"
+          echo "MACOSX_DEPLOYMENT_TARGET=11.0" >> "$GITHUB_ENV"
       - name: Install Rust
         shell: bash
         run: |
-          rustup toolchain install 1.92.0 --profile minimal
+          rustup show active-toolchain
           rustc --version
-          test "$(rustc -vV | sed -n 's/host: //p')" = '${{ runner.os == 'Windows' && 'x86_64-pc-windows-msvc' || 'x86_64-unknown-linux-gnu' }}'
+          test "$(rustc -vV | sed -n 's/host: //p')" = '${{ matrix.host }}'
+      - name: Test local runbook discovery
+        shell: bash
+        run: |
+          mkdir -p target
+          rustc --edition=2024 --test app/src/local_runbooks/catalog.rs -o target/runbook-tests
+          ./target/runbook-tests
       - name: Build Warpeer
         shell: bash
         run: cargo build --locked -p warp --bin warpeer --no-default-features --features warpeer --profile release-desktop
       - name: Package archive and checksum
         shell: bash
-        run: python script/warpeer/package-desktop.py ${{ matrix.platform }}
+        run: python3 script/warpeer/package-desktop.py ${{ matrix.platform }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: warpeer-${{ matrix.platform }}-x86_64
+          name: warpeer-${{ matrix.platform }}-${{ matrix.arch }}
           path: dist/*
           if-no-files-found: error
           retention-days: 14

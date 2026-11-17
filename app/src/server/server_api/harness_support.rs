@@ -5,18 +5,38 @@ use std::collections::HashMap;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use cynic::MutationBuilder;
 #[cfg(test)]
 use mockall::automock;
+use warp_cli::agent::{Harness, HarnessTransport};
+use warp_graphql::mutations::report_harness_transport::{
+    HarnessTransport as GraphQLHarnessTransport, HarnessTransportFallbackReason,
+    ReportHarnessTransport, ReportHarnessTransportInput, ReportHarnessTransportResult,
+    ReportHarnessTransportVariables,
+};
+#[cfg(not(target_family = "wasm"))]
+use warp_server_client::PresignedDownloadResponse;
+
+#[path = "harness_usage/publication.rs"]
+mod publication;
+pub use publication::HarnessUsageCapability;
+#[cfg(test)]
+use publication::parse_harness_usage_retry_after;
+#[cfg(not(target_family = "wasm"))]
+pub use publication::{HarnessUsageError, HarnessUsageErrorKind, HarnessUsagePublicationStatus};
 
 use super::ServerApi;
 #[cfg(feature = "local_fs")]
 pub use super::presigned_upload::FileUploadBody;
 pub use super::presigned_upload::UploadBody;
-use crate::ai::agent::conversation::AIConversationId;
+use crate::ai::agent::api::ServerConversationToken;
 #[cfg(not(target_family = "wasm"))]
 use crate::ai::agent_sdk::retry::with_bounded_retry;
 use crate::ai::ambient_agents::AmbientAgentTaskId;
 use crate::ai::artifacts::Artifact;
+use crate::server::graphql::{get_request_context, get_user_facing_error_message};
 
 /// A presigned upload target returned by the server.
 #[serde_with::serde_as]
@@ -201,6 +221,7 @@ pub struct SnapshotUploadResponse {
 #[derive(serde::Serialize)]
 struct CreateExternalConversationRequest {
     format: String,
+    harness: &'static str,
 }
 
 #[derive(serde::Deserialize)]
@@ -211,6 +232,13 @@ struct CreateExternalConversationResponse {
 #[derive(serde::Serialize)]
 struct GetUploadTargetRequest {
     conversation_id: String,
+}
+
+#[derive(serde::Serialize)]
+struct UploadConversationDataRequest {
+    conversation_id: String,
+    /// Base64 of the prost-encoded `ConversationData`.
+    conversation_data: String,
 }
 
 /// Skill attached to a resolve-prompt request,
@@ -248,6 +276,15 @@ pub struct ResolvedHarnessPrompt {
     /// after any resumption preamble.
     #[serde(default)]
     pub context: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "publication::deserialize_harness_usage_capability"
+    )]
+    pub harness_usage: Option<HarnessUsageCapability>,
+    /// Standard-Base64 serialized `Request.Input.UserQuery` carrying the attribution of the
+    /// query that opens this execution. Absent when the server has none to give.
+    #[serde(default)]
+    pub user_query_b64: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -270,6 +307,39 @@ struct FinishTaskRequest {
 struct ShutdownError {
     category: String,
     message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    exit_code: Option<u8>,
+}
+
+/// A harness transport report that sending again cannot fix: the server rejected it, answered
+/// with a result this client does not know, or the report itself carried an unknown reason.
+#[derive(Debug, thiserror::Error)]
+#[error("harness transport report rejected: {0}")]
+pub(crate) struct TransportReportRejected(pub String);
+
+/// The `reportHarnessTransport` input: the transport the harness is actually driven over, and
+/// why it differs from the requested one when it does.
+fn report_harness_transport_input(
+    transport: HarnessTransport,
+    fallback_reason: Option<&str>,
+) -> Result<ReportHarnessTransportInput, TransportReportRejected> {
+    let transport = match transport {
+        HarnessTransport::Acp => GraphQLHarnessTransport::Acp,
+        HarnessTransport::Pty => GraphQLHarnessTransport::Pty,
+    };
+    let fallback_reason = fallback_reason
+        .map(|reason| match reason {
+            "no_sidecar" => Ok(HarnessTransportFallbackReason::NoSidecar),
+            "sidecar_without_adapter" => Ok(HarnessTransportFallbackReason::SidecarWithoutAdapter),
+            other => Err(TransportReportRejected(format!(
+                "unknown fallback reason {other:?}"
+            ))),
+        })
+        .transpose()?;
+    Ok(ReportHarnessTransportInput {
+        transport,
+        fallback_reason,
+    })
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -285,9 +355,13 @@ impl ReportShutdownRequest {
     }
 
     /// An abnormal shutdown carrying an error category and message.
-    pub fn abnormal(category: String, message: String) -> Self {
+    pub fn abnormal(category: String, message: String, exit_code: Option<u8>) -> Self {
         Self {
-            error: Some(ShutdownError { category, message }),
+            error: Some(ShutdownError {
+                category,
+                message,
+                exit_code,
+            }),
         }
     }
 }
@@ -297,19 +371,32 @@ impl ReportShutdownRequest {
 #[cfg_attr(not(target_family = "wasm"), async_trait)]
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
 pub trait HarnessSupportClient: 'static + Send + Sync {
-    /// Create a new external conversation for a third-party harness.
-    async fn create_external_conversation(&self, format: &str) -> Result<AIConversationId>;
+    /// Create a new external conversation for a third-party harness. Returns a
+    /// server-issued [`ServerConversationToken`], not a client-local `AIConversationId`.
+    async fn create_external_conversation(
+        &self,
+        format: &str,
+        harness: Harness,
+    ) -> Result<ServerConversationToken>;
+
+    /// Replace the stored native conversation data for an external conversation whose format
+    /// is client-reduced. `conversation_data` is prost-encoded `ConversationData`.
+    async fn upload_conversation_data(
+        &self,
+        conversation_id: &ServerConversationToken,
+        conversation_data: &[u8],
+    ) -> Result<()>;
 
     /// Get a presigned upload target for the conversation's raw transcript.
     async fn get_transcript_upload_target(
         &self,
-        conversation_id: &AIConversationId,
+        conversation_id: &ServerConversationToken,
     ) -> Result<UploadTarget>;
 
     /// Get a presigned upload target for the conversation's block snapshot.
     async fn get_block_snapshot_upload_target(
         &self,
-        conversation_id: &AIConversationId,
+        conversation_id: &ServerConversationToken,
     ) -> Result<UploadTarget>;
 
     /// Resolve the prompt for a third-party harness run for a task stored on the server.
@@ -325,6 +412,14 @@ pub trait HarnessSupportClient: 'static + Send + Sync {
     /// artifacts already reported via `report_artifact`.
     async fn finish_task(&self, success: bool, summary: &str) -> Result<()>;
 
+    /// Report the transport the run's harness is actually driven over, with the reason when
+    /// the client fell back from the transport the server requested.
+    async fn report_transport(
+        &self,
+        transport: HarnessTransport,
+        fallback_reason: Option<&'static str>,
+    ) -> Result<()>;
+
     /// Report a clean shutdown of the agent process.
     async fn report_clean_shutdown(&self) -> Result<()>;
 
@@ -333,6 +428,7 @@ pub trait HarnessSupportClient: 'static + Send + Sync {
         &self,
         error_category: String,
         error_message: String,
+        exit_code: Option<u8>,
     ) -> Result<()>;
 
     /// Get presigned upload targets for a workspace state snapshot.
@@ -357,7 +453,7 @@ pub trait HarnessSupportClient: 'static + Send + Sync {
     /// Download the raw third-party harness transcript bytes for the current task's
     /// conversation.
     ///
-    /// Hits `GET /harness-support/transcript`, which redirects to a signed GCS URL.
+    /// Resolves a signed storage URL through `GET /harness-support/transcript?redirect=false`.
     /// The conversation is resolved from the task's `agent_conversation_id` server-side,
     /// so callers do not pass a conversation id. Each harness deserializes the returned
     /// bytes into its own envelope shape (e.g. Claude Code parses
@@ -367,7 +463,7 @@ pub trait HarnessSupportClient: 'static + Send + Sync {
     async fn fetch_transcript(&self) -> Result<bytes::Bytes>;
 
     /// Get an HTTP client to use with [`UploadTarget`]s for saving blobs.
-    fn http_client(&self) -> &http_client::Client;
+    fn external_http_client(&self) -> &http_client::Client;
 }
 
 impl ServerApi {
@@ -464,12 +560,17 @@ impl ServerApi {
         {
             with_bounded_retry("fetch task-scoped harness-support transcript", || async {
                 let response = self
-                    .get_public_api_response_for_task(task_id, "harness-support/transcript")
+                    .get_public_api_response_for_task(
+                        task_id,
+                        "harness-support/transcript?redirect=false",
+                    )
                     .await?;
-                response
-                    .bytes()
+                let download = response
+                    .json::<PresignedDownloadResponse>()
                     .await
-                    .context("Failed to read task-scoped harness-support transcript body")
+                    .map_err(reqwest::Error::without_url)
+                    .context("Failed to decode task-scoped transcript download URL")?;
+                self.base_client.download_presigned(&download.url).await
             })
             .await
         }
@@ -486,23 +587,42 @@ impl ServerApi {
 #[cfg_attr(not(target_family = "wasm"), async_trait)]
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
 impl HarnessSupportClient for ServerApi {
-    async fn create_external_conversation(&self, format: &str) -> Result<AIConversationId> {
+    async fn create_external_conversation(
+        &self,
+        format: &str,
+        harness: Harness,
+    ) -> Result<ServerConversationToken> {
         let response: CreateExternalConversationResponse = self
             .post_public_api(
                 "harness-support/external-conversation",
                 &CreateExternalConversationRequest {
                     format: format.to_string(),
+                    harness: harness.config_name(),
                 },
             )
             .await?;
 
-        AIConversationId::try_from(response.conversation_id)
-            .context("Server returned an invalid conversation ID")
+        Ok(ServerConversationToken::new(response.conversation_id))
+    }
+
+    async fn upload_conversation_data(
+        &self,
+        conversation_id: &ServerConversationToken,
+        conversation_data: &[u8],
+    ) -> Result<()> {
+        self.post_public_api_unit(
+            "harness-support/conversation-data",
+            &UploadConversationDataRequest {
+                conversation_id: conversation_id.to_string(),
+                conversation_data: BASE64_STANDARD.encode(conversation_data),
+            },
+        )
+        .await
     }
 
     async fn get_transcript_upload_target(
         &self,
-        conversation_id: &AIConversationId,
+        conversation_id: &ServerConversationToken,
     ) -> Result<UploadTarget> {
         self.post_public_api(
             "harness-support/transcript",
@@ -515,7 +635,7 @@ impl HarnessSupportClient for ServerApi {
 
     async fn get_block_snapshot_upload_target(
         &self,
-        conversation_id: &AIConversationId,
+        conversation_id: &ServerConversationToken,
     ) -> Result<UploadTarget> {
         self.post_public_api(
             "harness-support/block-snapshot",
@@ -557,6 +677,28 @@ impl HarnessSupportClient for ServerApi {
         .await
     }
 
+    async fn report_transport(
+        &self,
+        transport: HarnessTransport,
+        fallback_reason: Option<&'static str>,
+    ) -> Result<()> {
+        let operation = ReportHarnessTransport::build(ReportHarnessTransportVariables {
+            input: report_harness_transport_input(transport, fallback_reason)?,
+            request_context: get_request_context(),
+        });
+        let response = self.send_graphql_request(operation, None).await?;
+        match response.report_harness_transport {
+            ReportHarnessTransportResult::ReportHarnessTransportOutput(_) => Ok(()),
+            ReportHarnessTransportResult::UserFacingError(error) => {
+                Err(TransportReportRejected(get_user_facing_error_message(error)).into())
+            }
+            ReportHarnessTransportResult::Unknown => Err(TransportReportRejected(
+                "unknown reportHarnessTransport response".to_string(),
+            )
+            .into()),
+        }
+    }
+
     async fn report_clean_shutdown(&self) -> Result<()> {
         self.post_public_api_unit(
             "harness-support/report-shutdown",
@@ -569,10 +711,11 @@ impl HarnessSupportClient for ServerApi {
         &self,
         error_category: String,
         error_message: String,
+        exit_code: Option<u8>,
     ) -> Result<()> {
         self.post_public_api_unit(
             "harness-support/report-shutdown",
-            &ReportShutdownRequest::abnormal(error_category, error_message),
+            &ReportShutdownRequest::abnormal(error_category, error_message, exit_code),
         )
         .await
     }
@@ -600,12 +743,14 @@ impl HarnessSupportClient for ServerApi {
         {
             with_bounded_retry("fetch harness-support transcript", || async {
                 let response = self
-                    .get_public_api_response("harness-support/transcript")
+                    .get_public_api_response("harness-support/transcript?redirect=false")
                     .await?;
-                response
-                    .bytes()
+                let download = response
+                    .json::<PresignedDownloadResponse>()
                     .await
-                    .context("Failed to read harness-support transcript body")
+                    .map_err(reqwest::Error::without_url)
+                    .context("Failed to decode transcript download URL")?;
+                self.base_client.download_presigned(&download.url).await
             })
             .await
         }
@@ -617,8 +762,8 @@ impl HarnessSupportClient for ServerApi {
         }
     }
 
-    fn http_client(&self) -> &http_client::Client {
-        self.base_client.http_client()
+    fn external_http_client(&self) -> &http_client::Client {
+        self.base_client.external_http_client()
     }
 }
 
@@ -634,3 +779,7 @@ pub async fn upload_to_target(
 #[cfg(test)]
 #[path = "harness_support_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "harness_usage_tests.rs"]
+mod harness_usage_tests;

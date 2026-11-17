@@ -15,6 +15,7 @@ use warp_graphql::queries::get_runners::{
 
 use super::ServerApi;
 use crate::server::graphql::{get_request_context, get_user_facing_error_message};
+use crate::server::team_scope::RequestTeamScope;
 
 /// The result of upserting a runner: the resulting [`Runner`] plus whether the
 /// operation updated an existing runner (vs. creating a new one).
@@ -26,33 +27,71 @@ pub struct UpsertedRunner {
     pub is_update: bool,
 }
 
-/// Client for the Factory GraphQL surface (runner CRUD).
+#[cfg_attr(not(feature = "tui"), allow(dead_code))]
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct FactoryGitTokenResponse {
+    pub token: String,
+    expires_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl FactoryGitTokenResponse {
+    #[cfg_attr(not(feature = "tui"), allow(dead_code))]
+    pub fn expires_in(&self, delta: chrono::TimeDelta) -> bool {
+        self.expires_at < chrono::Utc::now() + delta
+    }
+}
+
+/// Client for the Factory CRUD API surface:
+/// - GraphQL for runners
+/// - REST for git tokens
 #[cfg_attr(test, automock)]
 #[cfg_attr(not(target_family = "wasm"), async_trait)]
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
 pub trait FactoryClient: 'static + Send + Sync {
     /// Fetch all runners visible to the caller, optionally sorted.
-    async fn get_runners(&self, sort_by: Option<RunnerSortBy>) -> Result<Vec<Runner>>;
+    async fn get_runners(
+        &self,
+        sort_by: Option<RunnerSortBy>,
+        team_scope: Option<RequestTeamScope>,
+    ) -> Result<Vec<Runner>>;
 
     /// Create or update a runner. `input.uid` is `None` for a create and
     /// `Some(_)` for an update; this single method backs both CLI commands.
     #[cfg_attr(target_family = "wasm", allow(dead_code))]
-    async fn upsert_runner(&self, input: UpsertRunnerInput) -> Result<UpsertedRunner>;
+    async fn upsert_runner(
+        &self,
+        input: UpsertRunnerInput,
+        team_scope: Option<RequestTeamScope>,
+    ) -> Result<UpsertedRunner>;
 
     /// Delete a runner by UID, returning the deleted UID on success.
     #[cfg_attr(target_family = "wasm", allow(dead_code))]
     async fn delete_runner(&self, uid: String) -> Result<String>;
+
+    /// Mint a git access jwt token for the definition of a factory
+    #[cfg_attr(not(feature = "tui"), allow(dead_code))]
+    async fn get_factory_git_token(&self, uid: String) -> Result<FactoryGitTokenResponse>;
 }
 
 #[cfg_attr(not(target_family = "wasm"), async_trait)]
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
 impl FactoryClient for ServerApi {
-    async fn get_runners(&self, sort_by: Option<RunnerSortBy>) -> Result<Vec<Runner>> {
+    async fn get_runners(
+        &self,
+        sort_by: Option<RunnerSortBy>,
+        team_scope: Option<RequestTeamScope>,
+    ) -> Result<Vec<Runner>> {
         let operation = GetRunners::build(GetRunnersVariables {
             request_context: get_request_context(),
             sort_by,
         });
-        let response = self.send_graphql_request(operation, None).await?;
+        let response = match team_scope {
+            Some(team_scope) => {
+                self.send_graphql_request_for_team(operation, team_scope)
+                    .await?
+            }
+            None => self.send_graphql_request(operation, None).await?,
+        };
         match response.get_runners {
             GetRunnersResult::GetRunnersOutput(output) => Ok(output.runners),
             GetRunnersResult::UserFacingError(e) => Err(anyhow!(get_user_facing_error_message(e))),
@@ -60,12 +99,22 @@ impl FactoryClient for ServerApi {
         }
     }
 
-    async fn upsert_runner(&self, input: UpsertRunnerInput) -> Result<UpsertedRunner> {
+    async fn upsert_runner(
+        &self,
+        input: UpsertRunnerInput,
+        team_scope: Option<RequestTeamScope>,
+    ) -> Result<UpsertedRunner> {
         let operation = UpsertRunner::build(UpsertRunnerVariables {
             input,
             request_context: get_request_context(),
         });
-        let response = self.send_graphql_request(operation, None).await?;
+        let response = match team_scope {
+            Some(team_scope) => {
+                self.send_graphql_request_for_team(operation, team_scope)
+                    .await?
+            }
+            None => self.send_graphql_request(operation, None).await?,
+        };
         match response.upsert_runner {
             UpsertRunnerResult::UpsertRunnerOutput(output) => Ok(UpsertedRunner {
                 runner: output.runner,
@@ -95,5 +144,15 @@ impl FactoryClient for ServerApi {
             }
             DeleteRunnerResult::Unknown => Err(anyhow!("failed to delete runner")),
         }
+    }
+
+    async fn get_factory_git_token(&self, uid: String) -> Result<FactoryGitTokenResponse> {
+        let response: FactoryGitTokenResponse = self
+            .post_public_api(
+                &format!("factory/{}/git-token", uid),
+                &serde_json::json!({}),
+            )
+            .await?;
+        Ok(response)
     }
 }

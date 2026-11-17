@@ -40,7 +40,7 @@ tokio = { workspace = true, features = ["io-util", "net", "time"] }
 tokio-rustls = "0.26.4"
 graphql-ws-client = {workspace = true, optional = true, features = ["tungstenite"]}
 rustls = "0.23.29"
-rustls-platform-verifier = "0.6.1"
+rustls-platform-verifier = "0.7.0"
 
 [features]
 default = ["graphql_runtime"]

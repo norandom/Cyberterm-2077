@@ -187,31 +187,70 @@ def factory_tree(**files: str):
         shutil.rmtree(root, ignore_errors=True)
 
 
-def assert_submits_only_resource_files() -> None:
-    """Only canonical resource paths are uploaded.
+def assert_submits_resource_files() -> None:
+    """Canonical resources and invalid benchmark YAML paths are uploaded.
 
-    Skills can hold anything a repository wants to give an agent, and unrelated
-    files are none of the server's business, so neither is sent.
+    Skill folders can hold anything a repository wants to give an agent, and
+    unrelated files are none of the server's business, so neither is sent; skill
+    reference files directly in a skills directory are. Invalid benchmark YAML
+    must reach the server so it can report the unsupported path.
     """
     with factory_tree(
         **{
             "automations/nightly/automation.md": "---\nagent: main\n---\nrun\n",
             "runners/linux.yaml": "platform:\n  linux:\n    dockerImage: ubuntu:24.04\n",
             "scorers/tests/scorer.md": "---\nagents: [main]\n---\nRubric.\n",
+            "benchmarks/terminal-bench/suite.yaml": "name: Terminal Bench\nagent: main\n",
+            "benchmarks/terminal-bench/tasks/build.yaml": (
+                "title: Build\nprompt: Build it.\nsuccessCriteria: It builds.\n"
+            ),
             "webhooks/ci.yaml": "authMode: token\nsecretName: CI_TOKEN\n",
             "skills/helper/SKILL.md": "---\nname: helper\n---\nhelp\n",
             "agents/main/skills/inner/SKILL.md": "---\nname: inner\n---\nhelp\n",
+            "skills/shared.yaml": "source: github.com:acme/shared-skills\ninclude: [deploy]\n",
+            "agents/main/skills/review.yml": (
+                "source:\n  owner: acme\n  repo: review-skills\n  codeForge: GITHUB\n"
+                "include: [review]\n"
+            ),
+            "skills/helper/config.yaml": "part of the helper skill",
+            "agents/main/skills/inner/config.yml": "part of the inner skill",
+            "skills/notes.txt": "unrelated",
             "README.md": "unrelated",
             "agents/main/notes.txt": "unrelated",
+            "benchmarks/README.md": "unrelated",
+            "benchmarks/terminal-bench/tasks/paused.yaml.disabled": "unrelated",
+            "benchmarks/terminal-bench/notes.yaml": "unsupported benchmark resource path",
+            "benchmarks/terminal-bench/tasks/CON.yaml": "invalid benchmark task slug",
+            "benchmarks/terminal-bench/tasks/wrong.yml": "unsupported benchmark extension",
+            "benchmarks/terminal-bench/tasks/nested/inner.yaml": (
+                "unsupported benchmark resource path"
+            ),
             # Not a canonical webhook path: the server would not classify a
             # nested file as a source, so submitting it would be noise.
             "webhooks/nested/inner.yaml": "authMode: token\n",
         }
     ) as root:
-        with fake_server(CLEAN_RESPONSE) as server:
+        response = {
+            "schema_version": "v1alpha1",
+            "valid": False,
+            "diagnostics": [
+                {
+                    "path": "benchmarks/terminal-bench/notes.yaml",
+                    "line": 1,
+                    "column": 1,
+                    "code": "FF_UNSUPPORTED_PATH",
+                    "message": "unsupported Factory resource path",
+                }
+            ],
+        }
+        with fake_server(response) as server:
             result = run_validator(root, server.url)
-        if result.returncode != EXIT_VALID:
-            raise RuntimeError(f"expected a clean pass, got: {result.stdout}{result.stderr}")
+        if result.returncode != EXIT_DIAGNOSTICS:
+            raise RuntimeError(
+                f"expected an unsupported-path diagnostic, got: {result.stdout}{result.stderr}"
+            )
+        if "FF_UNSUPPORTED_PATH" not in result.stderr:
+            raise RuntimeError(f"the server diagnostic was not relayed: {result.stderr}")
         submitted = {entry["path"] for entry in server.submitted_files()}
         expected = {
             "factory.yaml",
@@ -219,7 +258,15 @@ def assert_submits_only_resource_files() -> None:
             "automations/nightly/automation.md",
             "runners/linux.yaml",
             "scorers/tests/scorer.md",
+            "benchmarks/terminal-bench/suite.yaml",
+            "benchmarks/terminal-bench/tasks/build.yaml",
+            "benchmarks/terminal-bench/notes.yaml",
+            "benchmarks/terminal-bench/tasks/CON.yaml",
+            "benchmarks/terminal-bench/tasks/wrong.yml",
+            "benchmarks/terminal-bench/tasks/nested/inner.yaml",
             "webhooks/ci.yaml",
+            "skills/shared.yaml",
+            "agents/main/skills/review.yml",
         }
         if submitted != expected:
             raise RuntimeError(
@@ -521,6 +568,20 @@ def assert_oversized_trees_are_reported() -> None:
             raise RuntimeError(f"an oversized file was not reported: {result.stderr}")
 
 
+def assert_file_count_boundary() -> None:
+    files = {f"runners/build-{index}.yaml": "{}" for index in range(2046)}
+    with factory_tree(**files) as root:
+        with fake_server(CLEAN_RESPONSE) as server:
+            result = run_validator(root, server.url)
+            if result.returncode != EXIT_VALID or len(server.submitted_files()) != 2048:
+                raise RuntimeError("the file-count limit was not accepted")
+        (root / "runners" / "overflow.yaml").write_text("{}", encoding="utf-8")
+        with fake_server(CLEAN_RESPONSE) as server:
+            result = run_validator(root, server.url)
+            if result.returncode != EXIT_NOT_VALIDATED or server.submitted_files():
+                raise RuntimeError("a tree above the file-count limit was uploaded")
+
+
 def assert_json_output_never_implies_a_verdict() -> None:
     """--json distinguishes "checked and clean" from "not checked"."""
     with factory_tree() as root:
@@ -596,7 +657,7 @@ def assert_packaged_skill_matches() -> None:
 
 
 CHECKS = (
-    ("only resource files are submitted", assert_submits_only_resource_files),
+    ("resource files are submitted", assert_submits_resource_files),
     ("the server's verdict is relayed verbatim", assert_reports_the_servers_verdict),
     ("deferred resolutions are surfaced", assert_surfaces_deferred_resolutions),
     ("an unreached verdict is never a pass", assert_unreached_verdicts_are_never_a_pass),
@@ -608,6 +669,7 @@ CHECKS = (
     ),
     ("symlinked resources are refused", assert_symlinked_resources_are_refused),
     ("oversized trees are reported", assert_oversized_trees_are_reported),
+    ("file-count boundary is enforced", assert_file_count_boundary),
     ("json output never implies a verdict", assert_json_output_never_implies_a_verdict),
     ("no local copy of the format remains", assert_no_format_copy_remains),
     ("source and bundled trees match", assert_packaged_skill_matches),

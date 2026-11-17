@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 use cynic::{GraphQlResponse, QueryFragment, QueryVariables};
-use http::StatusCode;
+use http::{HeaderValue, StatusCode};
 use instant::Duration;
 use reqwest::header::CONTENT_TYPE;
 use serde::Serialize;
@@ -118,7 +118,14 @@ where
         req = req.timeout(timeout);
     }
     for (header, value) in options.headers {
-        req = req.header(header, value);
+        if header.eq_ignore_ascii_case("X-Warp-Ambient-Workload-Token")
+            && let Ok(mut sensitive_value) = HeaderValue::from_str(&value)
+        {
+            sensitive_value.set_sensitive(true);
+            req = req.header(header, sensitive_value);
+        } else {
+            req = req.header(header, value);
+        }
     }
 
     Ok(Request {
@@ -166,6 +173,9 @@ where
                     .is_some_and(|v| v.contains("text/html"));
 
                 if is_html {
+                    log::error!(
+                        "{operation_name} request to /graphql/v2 not authorized for staging"
+                    );
                     return Err(GraphQLError::StagingAccessBlocked);
                 }
             }
@@ -208,6 +218,7 @@ pub fn get_request_context() -> RequestContext {
 /// Returns a user-facing error message for the given [`UserFacingError`].
 pub fn get_user_facing_error_message(e: UserFacingError) -> String {
     match e.error {
+        UserFacingErrorInterface::PlatformError(e) => e.message,
         UserFacingErrorInterface::SharedObjectsLimitExceeded(e) => e.message,
         UserFacingErrorInterface::PersonalObjectsLimitExceeded(e) => e.message,
         UserFacingErrorInterface::AccountDelinquencyError(e) => e.message,

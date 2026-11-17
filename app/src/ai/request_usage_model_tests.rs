@@ -2,8 +2,11 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use ai::LLMProvider;
-use ai::api_keys::{ApiKeyManager, AwsCredentials, AwsCredentialsState, GrokTokens};
-use chrono::Duration;
+use ai::api_keys::{
+    ApiKeyManager, AwsCredentials, AwsCredentialsState, CustomEndpoint, CustomEndpointDefinitions,
+    CustomEndpointModel, GrokTokens,
+};
+use chrono::{Duration, TimeZone};
 use warp_core::features::FeatureFlag;
 use warp_core::telemetry::testing::MockTelemetryContextProvider;
 use warp_graphql::billing::{AddonCreditsOption, OveragesPricing, PricingInfo};
@@ -13,6 +16,7 @@ use super::*;
 use crate::ai::credit_availability::{AICreditAvailability, AICreditDenialReason, AICreditSource};
 use crate::auth::AuthStateProvider;
 use crate::pricing::PricingInfoModel;
+use crate::server::ids::ServerId;
 use crate::server::server_api::ServerApiProvider;
 use crate::server::server_api::ai::MockAIClient;
 use crate::server::server_api::team::MockTeamClient;
@@ -22,9 +26,10 @@ use crate::workspaces::user_workspaces::{
     TeamContextForOperation, TeamlessScopeForTest, UserWorkspaces,
 };
 use crate::workspaces::workspace::{
-    AiOverages, ByoApiKeyPolicy, CustomerType, EnterpriseCreditsAutoReloadPolicy,
-    EnterprisePayAsYouGoPolicy, HostEnablementSetting, LlmHostSettings, ManagedByokByoePolicy,
-    PurchaseAddOnCreditsPolicy, TeamByoSettings, Workspace, WorkspaceUid,
+    AiOverages, ByoApiKeyPolicy, ByoEndpointPolicy, CustomerType,
+    EnterpriseCreditsAutoReloadPolicy, EnterprisePayAsYouGoPolicy, HostEnablementSetting,
+    LlmHostSettings, ManagedByokByoePolicy, PurchaseAddOnCreditsPolicy, TeamByoSettings, Workspace,
+    WorkspaceUid,
 };
 
 fn create_test_workspace() -> (WorkspaceUid, Workspace) {
@@ -101,6 +106,40 @@ fn add_request_usage_model_without_auth(app: &mut App) -> ModelHandle<AIRequestU
     })
 }
 
+/// Current-format endpoint: definition and secret are stored separately, and the secret is written
+/// only through `persist_custom_endpoint_keys`. `add_custom_endpoint` would also fill the legacy
+/// `keys.custom_endpoints` vector, which is the list the credit gate used to read.
+fn install_current_format_custom_endpoint(app: &mut App, secret: Option<&str>) {
+    let legacy = vec![CustomEndpoint {
+        name: "Endpoint".to_string(),
+        url: "https://api.example.com/v1".to_string(),
+        api_key: "endpoint-secret".to_string(),
+        schema: Default::default(),
+        models: vec![CustomEndpointModel {
+            name: "model".to_string(),
+            alias: None,
+            config_key: "config-key".to_string(),
+        }],
+    }];
+    let (definitions, mut keys) = CustomEndpointDefinitions::from_legacy(&legacy)
+        .expect("legacy endpoint should convert to a current-format definition");
+    let id = definitions.id_at(0).expect("one endpoint").clone();
+    match secret {
+        Some(secret) => {
+            keys.insert(id, secret.to_string());
+        }
+        None => {
+            keys.remove(&id);
+        }
+    }
+    ApiKeyManager::handle(app)
+        .update(app, |manager, ctx| {
+            manager.set_custom_endpoint_definitions(definitions, ctx);
+            manager.persist_custom_endpoint_keys(keys, ctx)
+        })
+        .expect("noop secure storage should persist the endpoint secret");
+}
+
 /// Registers the request usage model backed by an explicit AI client so tests
 /// can control the availability fetch behavior.
 fn add_request_usage_model_with_client(
@@ -122,6 +161,7 @@ fn set_addon_credits_pricing_info(app: &mut App) {
                 addon_credits_options: vec![AddonCreditsOption {
                     credits: 1000,
                     price_usd_cents: 1000,
+                    usage_cents: None,
                 }],
                 promotion_message: None,
             },
@@ -175,6 +215,8 @@ fn test_request_limit_info() {
             request_usage_model.request_limit_info = RequestLimitInfo {
                 limit: 200,
                 num_requests_used_since_refresh: 39,
+                included_usage_cents: None,
+                usage_cents_used_since_last_refresh: None,
                 next_refresh_time: ServerTimestamp::new(Utc::now() + Duration::days(1)),
                 is_unlimited: false,
                 request_limit_refresh_duration: RequestLimitRefreshDuration::Monthly,
@@ -194,6 +236,80 @@ fn test_request_limit_info() {
 }
 
 #[test]
+fn test_cached_request_limit_info_without_usage_cents_deserializes() {
+    let mut cached = serde_json::to_value(RequestLimitInfo::default()).unwrap();
+    let cached_object = cached.as_object_mut().unwrap();
+    cached_object.remove("included_usage_cents");
+    cached_object.remove("usage_cents_used_since_last_refresh");
+
+    let request_limit_info: RequestLimitInfo = serde_json::from_value(cached).unwrap();
+
+    assert_eq!(request_limit_info.included_usage_cents, None);
+    assert_eq!(request_limit_info.usage_cents_used_since_last_refresh, None);
+}
+
+#[test]
+fn test_request_limit_info_round_trips_usage_cents() {
+    let request_limit_info = RequestLimitInfo {
+        included_usage_cents: Some(1800.0),
+        usage_cents_used_since_last_refresh: Some(70.2),
+        ..RequestLimitInfo::default()
+    };
+
+    let serialized = serde_json::to_string(&request_limit_info).unwrap();
+    let deserialized: RequestLimitInfo = serde_json::from_str(&serialized).unwrap();
+
+    assert_eq!(deserialized.included_usage_cents, Some(1800.0));
+    assert_eq!(deserialized.usage_cents_used_since_last_refresh, Some(70.2));
+}
+
+#[test]
+fn test_dollar_accessors_expose_the_server_supplied_cents() {
+    App::test((), |mut app| async move {
+        let request_usage_model = add_request_usage_model(&mut app);
+        request_usage_model.update(&mut app, |model, _ctx| {
+            model.request_limit_info = RequestLimitInfo {
+                included_usage_cents: Some(1800.0),
+                usage_cents_used_since_last_refresh: Some(70.2),
+                next_refresh_time: ServerTimestamp::new(Utc::now() + Duration::days(1)),
+                ..RequestLimitInfo::default()
+            };
+            assert_eq!(model.included_usage_cents(), Some(1800.0));
+            assert_eq!(model.usage_cents_used(), Some(70.2));
+        })
+    });
+}
+
+#[test]
+fn test_usage_cents_used_is_zero_past_refresh_time() {
+    App::test((), |mut app| async move {
+        let request_usage_model = add_request_usage_model(&mut app);
+        request_usage_model.update(&mut app, |model, _ctx| {
+            model.request_limit_info = RequestLimitInfo {
+                included_usage_cents: Some(1800.0),
+                usage_cents_used_since_last_refresh: Some(70.2),
+                next_refresh_time: ServerTimestamp::new(Utc::now() - Duration::seconds(1)),
+                ..RequestLimitInfo::default()
+            };
+            assert_eq!(model.usage_cents_used(), Some(0.));
+            assert_eq!(model.included_usage_cents(), Some(1800.0));
+        })
+    });
+}
+
+#[test]
+fn test_dollar_accessors_are_none_without_server_supplied_cents() {
+    App::test((), |mut app| async move {
+        let request_usage_model = add_request_usage_model(&mut app);
+        request_usage_model.update(&mut app, |model, _ctx| {
+            model.request_limit_info = RequestLimitInfo::new_for_test(200, 39);
+            assert_eq!(model.included_usage_cents(), None);
+            assert_eq!(model.usage_cents_used(), None);
+        })
+    });
+}
+
+#[test]
 fn test_request_limit_info_with_limit() {
     App::test((), |mut app| async move {
         let request_usage_model = add_request_usage_model(&mut app);
@@ -201,6 +317,8 @@ fn test_request_limit_info_with_limit() {
             request_usage_model.request_limit_info = RequestLimitInfo {
                 limit: 999999999,
                 num_requests_used_since_refresh: 39,
+                included_usage_cents: None,
+                usage_cents_used_since_last_refresh: None,
                 next_refresh_time: ServerTimestamp::new(Utc::now() + Duration::minutes(1)),
                 is_unlimited: false,
                 request_limit_refresh_duration: RequestLimitRefreshDuration::Monthly,
@@ -227,6 +345,8 @@ fn test_request_limit_info_past_refresh_time() {
             request_usage_model.request_limit_info = RequestLimitInfo {
                 limit: 200,
                 num_requests_used_since_refresh: 39,
+                included_usage_cents: None,
+                usage_cents_used_since_last_refresh: None,
                 next_refresh_time: ServerTimestamp::new(Utc::now() - Duration::seconds(1)),
                 is_unlimited: false,
                 request_limit_refresh_duration: RequestLimitRefreshDuration::Monthly,
@@ -253,6 +373,8 @@ fn test_request_limit_info_is_unlimited_true() {
             request_usage_model.request_limit_info = RequestLimitInfo {
                 limit: 999999999,
                 num_requests_used_since_refresh: 39,
+                included_usage_cents: None,
+                usage_cents_used_since_last_refresh: None,
                 next_refresh_time: ServerTimestamp::new(Utc::now() + Duration::minutes(1)),
                 is_unlimited: true,
                 request_limit_refresh_duration: RequestLimitRefreshDuration::Monthly,
@@ -308,6 +430,8 @@ fn test_buy_credits_banner_shows_with_only_ambient_bonus_credits() {
                 user_facing_message: None,
                 request_credits_granted: 1000,
                 request_credits_remaining: 1000,
+                usage_cents_granted: None,
+                usage_cents_remaining: None,
                 scope: BonusGrantScope::User,
             }];
 
@@ -403,6 +527,8 @@ fn test_buy_credits_banner_hidden_with_non_ambient_bonus_credits() {
                 user_facing_message: None,
                 request_credits_granted: 100,
                 request_credits_remaining: 100,
+                usage_cents_granted: None,
+                usage_cents_remaining: None,
                 scope: BonusGrantScope::User,
             }];
 
@@ -437,6 +563,8 @@ fn test_buy_credits_banner_shows_when_non_ambient_bonus_credits_are_depleted() {
                 user_facing_message: None,
                 request_credits_granted: 100,
                 request_credits_remaining: 0,
+                usage_cents_granted: None,
+                usage_cents_remaining: None,
                 scope: BonusGrantScope::User,
             }];
 
@@ -691,6 +819,8 @@ fn test_has_any_ai_remaining_true_with_user_bonus_credits() {
                 user_facing_message: None,
                 request_credits_granted: 5,
                 request_credits_remaining: 5,
+                usage_cents_granted: None,
+                usage_cents_remaining: None,
                 scope: BonusGrantScope::User,
             }];
 
@@ -755,6 +885,8 @@ fn test_has_any_ai_remaining_true_with_workspace_bonus_credits() {
                 user_facing_message: None,
                 request_credits_granted: 5,
                 request_credits_remaining: 5,
+                usage_cents_granted: None,
+                usage_cents_remaining: None,
                 scope: BonusGrantScope::Workspace(uid),
             }];
 
@@ -784,6 +916,8 @@ fn test_total_workspace_and_team_bonus_credits_counts_both_scopes() {
                 user_facing_message: None,
                 request_credits_granted: remaining,
                 request_credits_remaining: remaining,
+                usage_cents_granted: None,
+                usage_cents_remaining: None,
                 scope,
             };
             model.bonus_grants = vec![
@@ -798,6 +932,115 @@ fn test_total_workspace_and_team_bonus_credits_counts_both_scopes() {
                 18
             );
             assert_eq!(model.total_user_interactive_bonus_credits_remaining(), 5);
+        });
+    });
+}
+
+#[test]
+fn test_bonus_usage_cents_remaining_sums_grants_with_dollar_values() {
+    App::test((), |mut app| async move {
+        let (uid, workspace) = create_test_workspace();
+        add_user_workspaces_with_workspace(&mut app, workspace);
+        let request_usage_model = add_request_usage_model(&mut app);
+
+        request_usage_model.update(&mut app, |model, _ctx| {
+            let make = |scope, grant_type, remaining, usage_cents_remaining| BonusGrant {
+                created_at: Utc::now(),
+                cost_cents: 0,
+                expiration: None,
+                grant_type,
+                reason: "test".to_string(),
+                user_facing_message: None,
+                request_credits_granted: remaining,
+                request_credits_remaining: remaining,
+                usage_cents_granted: usage_cents_remaining,
+                usage_cents_remaining,
+                scope,
+            };
+            // The sums report the server-supplied cents regardless of the billing unit; the
+            // tier decides whether a surface shows them.
+            model.request_limit_info = RequestLimitInfo::new_for_test(10, 0);
+            model.bonus_grants = vec![
+                make(BonusGrantScope::User, BonusGrantType::Any, 5, Some(9.0)),
+                make(
+                    BonusGrantScope::User,
+                    BonusGrantType::AmbientOnly,
+                    100,
+                    Some(180.0),
+                ),
+                make(
+                    BonusGrantScope::Team(uid),
+                    BonusGrantType::Any,
+                    7,
+                    Some(12.5),
+                ),
+                make(
+                    BonusGrantScope::Workspace(uid),
+                    BonusGrantType::Any,
+                    11,
+                    Some(19.75),
+                ),
+            ];
+
+            assert_eq!(
+                model.total_workspace_and_team_bonus_usage_cents_remaining(uid),
+                Some(32.25)
+            );
+            assert_eq!(
+                model.total_user_interactive_bonus_usage_cents_remaining(),
+                Some(9.0)
+            );
+            assert_eq!(model.ambient_only_usage_cents_remaining(), Some(180.0));
+
+            // A grant without a dollar value makes its total fall back to credits.
+            model.bonus_grants.push(make(
+                BonusGrantScope::Team(uid),
+                BonusGrantType::Any,
+                3,
+                None,
+            ));
+            model.bonus_grants.push(make(
+                BonusGrantScope::User,
+                BonusGrantType::AmbientOnly,
+                3,
+                None,
+            ));
+            assert_eq!(
+                model.total_workspace_and_team_bonus_usage_cents_remaining(uid),
+                None
+            );
+            assert_eq!(
+                model.total_workspace_and_team_bonus_credits_remaining(uid),
+                21
+            );
+            assert_eq!(model.ambient_only_usage_cents_remaining(), None);
+            assert_eq!(model.ambient_only_credits_remaining(), Some(103));
+        });
+    });
+}
+
+#[test]
+fn test_bonus_usage_cents_remaining_without_grants() {
+    App::test((), |mut app| async move {
+        let (uid, workspace) = create_test_workspace();
+        add_user_workspaces_with_workspace(&mut app, workspace);
+        let request_usage_model = add_request_usage_model(&mut app);
+
+        request_usage_model.update(&mut app, |model, _ctx| {
+            model.bonus_grants.clear();
+
+            // An empty pool is a known zero-dollar balance, while "no ambient grants" stays
+            // unknown like its credit counterpart.
+            assert_eq!(
+                model.total_workspace_and_team_bonus_usage_cents_remaining(uid),
+                Some(0.0)
+            );
+            assert_eq!(
+                model.total_user_interactive_bonus_usage_cents_remaining(),
+                Some(0.0)
+            );
+            assert_eq!(model.ambient_only_usage_cents_remaining(), None);
+            assert_eq!(model.ambient_only_credits_remaining(), None);
         });
     });
 }
@@ -1276,6 +1519,8 @@ fn test_has_any_ai_remaining_false_with_only_ambient_bonus_credits() {
                 user_facing_message: None,
                 request_credits_granted: 1000,
                 request_credits_remaining: 1000,
+                usage_cents_granted: None,
+                usage_cents_remaining: None,
                 scope: BonusGrantScope::User,
             }];
 
@@ -1622,6 +1867,39 @@ fn test_server_unavailable_overrides_local_byo_key() {
 }
 
 #[test]
+fn test_out_of_credits_refined_by_current_format_custom_endpoint() {
+    App::test((), |mut app| async move {
+        // The secret is stored only via `persist_custom_endpoint_keys`, so
+        // `keys.custom_endpoints` stays empty while requests already send the resolved endpoint.
+        let (_uid, mut workspace) = create_test_workspace();
+        workspace.billing_metadata.tier.byo_endpoint_policy =
+            Some(ByoEndpointPolicy { enabled: true });
+        add_user_workspaces_with_workspace(&mut app, workspace);
+        let request_usage_model = add_request_usage_model(&mut app);
+        install_current_format_custom_endpoint(&mut app, Some("endpoint-secret"));
+
+        request_usage_model.update(&mut app, |model, ctx| {
+            model.apply_server_availability(
+                Ok(AICreditAvailability::unavailable(
+                    AICreditDenialReason::OutOfCredits,
+                )),
+                ctx,
+            );
+            let manager = ApiKeyManager::as_ref(ctx);
+            assert!(
+                manager.keys().custom_endpoints.is_empty(),
+                "current-format secrets must not land on the legacy endpoint vector",
+            );
+            assert_eq!(manager.custom_endpoints()[0].api_key, "endpoint-secret");
+            assert!(
+                model.has_any_ai_remaining(&TeamlessScopeForTest, ctx),
+                "resolved custom endpoint secrets should refine out-of-credits",
+            );
+        });
+    });
+}
+
+#[test]
 fn test_availability_refresh_coalesces_concurrent_fetches() {
     App::test((), |mut app| async move {
         app.add_singleton_model(|_| AuthStateProvider::new_for_test());
@@ -1678,6 +1956,144 @@ fn test_availability_refresh_skipped_when_logged_out() {
 
         request_usage_model.read(&app, |model, _| {
             assert_eq!(model.server_availability(), None);
+        });
+    });
+}
+
+fn workspace_uid(workspace: i64) -> WorkspaceUid {
+    WorkspaceUid::from(ServerId::from(workspace))
+}
+
+fn allowances() -> Vec<WorkspaceIncludedUsage> {
+    let mut second = pool();
+    second.included_usage_credits = 2000.0;
+    vec![
+        WorkspaceIncludedUsage {
+            workspace_uid: workspace_uid(1),
+            info: pool(),
+        },
+        WorkspaceIncludedUsage {
+            workspace_uid: workspace_uid(2),
+            info: second,
+        },
+    ]
+}
+
+fn pool() -> WorkspaceIncludedUsageInfo {
+    WorkspaceIncludedUsageInfo {
+        included_usage_credits: 1234.75,
+        usage_credits_used_since_last_refresh: 250.125,
+        included_usage_cents: 10_000.0,
+        usage_cents_used_since_last_refresh: 1250.25,
+        next_refresh_time: (Utc.with_ymd_and_hms(2026, 11, 6, 0, 0, 0).unwrap()
+            + Duration::days(1))
+        .into(),
+    }
+}
+
+#[test]
+fn included_usage_refreshes_with_grants_and_selects_cached_workspaces() {
+    App::test((), |mut app| async move {
+        app.update(crate::settings::init_and_register_user_preferences);
+        app.add_singleton_model(crate::settings::PrivacySettings::mock);
+        app.add_singleton_model(crate::settings::AISettings::new_with_defaults);
+        app.add_singleton_model(|_| AuthStateProvider::new_for_test());
+        app.add_singleton_model(|ctx| {
+            let workspaces = [1, 2, 3]
+                .into_iter()
+                .map(|id| {
+                    let mut workspace = Workspace::from_local_cache(
+                        workspace_uid(id),
+                        format!("Scale {id}"),
+                        None,
+                        None,
+                    );
+                    workspace.billing_metadata.customer_type = if id == 2 {
+                        CustomerType::Business
+                    } else {
+                        CustomerType::Scale
+                    };
+                    workspace
+                })
+                .collect();
+            UserWorkspaces::mock(
+                Arc::new(MockTeamClient::new()),
+                Arc::new(MockWorkspaceClient::new()),
+                workspaces,
+                ctx,
+            )
+        });
+        let mut client = MockAIClient::new();
+        let mut sequence = mockall::Sequence::new();
+        client
+            .expect_get_request_limit_info()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|| {
+                Ok(RequestUsageInfo {
+                    request_limit_info: RequestLimitInfo::default(),
+                    bonus_grants: vec![],
+                    workspace_allowances: allowances(),
+                })
+            });
+        client
+            .expect_get_request_limit_info()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|| Err(anyhow::anyhow!("Refresh failed")));
+        client
+            .expect_get_request_limit_info()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|| {
+                Ok(RequestUsageInfo {
+                    request_limit_info: RequestLimitInfo::default(),
+                    bonus_grants: vec![],
+                    workspace_allowances: Vec::new(),
+                })
+            });
+        let model =
+            app.add_singleton_model(|ctx| AIRequestUsageModel::new_for_test(Arc::new(client), ctx));
+        assert!(
+            model
+                .update(&mut app, |model, ctx| model.refresh_request_usage(ctx))
+                .await
+                .unwrap()
+                .is_some()
+        );
+        for (id, expected) in [(2, Some(2000.0)), (1, Some(1234.75)), (3, None)] {
+            UserWorkspaces::handle(&app).update(&mut app, |workspaces, ctx| {
+                workspaces.set_current_workspace_uid(workspace_uid(id), ctx);
+            });
+            model.read(&app, |model, ctx| {
+                match (model.workspace_included_usage(ctx), expected) {
+                    (Some(info), Some(expected)) => {
+                        assert_eq!(info.included_usage_credits, expected);
+                    }
+                    (None, None) => {}
+                    _ => panic!("Workspace selection should read the cached allowance"),
+                }
+            });
+        }
+        assert!(
+            model
+                .update(&mut app, |model, ctx| model.refresh_request_usage(ctx))
+                .await
+                .unwrap()
+                .is_none()
+        );
+        model.read(&app, |model, _| {
+            assert_eq!(model.workspace_allowances.len(), 2)
+        });
+        assert!(
+            model
+                .update(&mut app, |model, ctx| model.refresh_request_usage(ctx))
+                .await
+                .unwrap()
+                .is_some()
+        );
+        model.read(&app, |model, _| {
+            assert!(model.workspace_allowances.is_empty())
         });
     });
 }

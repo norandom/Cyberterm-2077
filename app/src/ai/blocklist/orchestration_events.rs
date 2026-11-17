@@ -17,28 +17,11 @@ use crate::ai::agent::{
 const MAX_RETRY_ATTEMPTS: i32 = 3;
 const MAX_PENDING_LIFECYCLE_EVENTS_PER_TARGET: usize = 200;
 
-/// Stage associated with a lifecycle error detail.
-/// This keeps persisted/runtime metadata consistent across API payloads and DB rows.
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum LifecycleEventDetailStage {
-    Runtime,
-}
-
 #[derive(Debug, Clone, Default)]
 pub(super) struct LifecycleEventDetailPayload {
-    pub(crate) stage: Option<LifecycleEventDetailStage>,
     pub(crate) reason: Option<String>,
     pub(crate) error_message: Option<String>,
     pub(crate) blocked_action: Option<String>,
-}
-
-impl LifecycleEventDetailStage {
-    /// Canonical lowercase representation used in persistence/API payloads.
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Runtime => "runtime",
-        }
-    }
 }
 
 /// Type-specific queued data.
@@ -147,6 +130,26 @@ impl OrchestrationEventService {
             log::warn!(
                 "Dropping {} orchestration event(s) for conversation {conversation_id:?}: \
                  its ambient run began terminal exit before they could be delivered",
+                dropped.len()
+            );
+        }
+    }
+
+    /// Drops any orchestration events still queued for `conversation_id` because an external
+    /// harness drives its turns (see `ConversationDriver::owns_turn_lifecycle`): this client never
+    /// dispatches to Warp's agent loop for it, and the server wakes such runs itself when new
+    /// messages arrive.
+    pub fn drop_pending_events_for_external_harness_conversation(
+        &mut self,
+        conversation_id: AIConversationId,
+    ) {
+        if let Some(dropped) = self.pending_events.remove(&conversation_id)
+            && !dropped.is_empty()
+        {
+            log::info!(
+                "[orch-external-harness] Dropping {} queued orchestration event(s) for \
+                 conversation {conversation_id:?}: an external harness drives its turns, so \
+                 they cannot be injected into Warp's agent loop",
                 dropped.len()
             );
         }
@@ -427,18 +430,22 @@ impl OrchestrationEventService {
         }
     }
 
-    /// Scans the exchange output for orchestration IDs echoed back by the
-    /// server, then clears matching entries from awaiting_server_echo_events.
+    /// Clears events whose IDs the server echoed back in the exchange output. An echoed event
+    /// that is still pending was delivered by another route, so injecting it would repeat a turn.
     fn confirm_delivery_from_exchange(
         &mut self,
         conversation_id: AIConversationId,
         exchange_id: AIAgentExchangeId,
         ctx: &ModelContext<Self>,
     ) {
-        if !self
+        let has_awaiting = self
             .awaiting_server_echo_events
-            .contains_key(&conversation_id)
-        {
+            .contains_key(&conversation_id);
+        let has_pending = self
+            .pending_events
+            .get(&conversation_id)
+            .is_some_and(|events| !events.is_empty());
+        if !has_awaiting && !has_pending {
             return;
         }
 
@@ -495,7 +502,7 @@ impl OrchestrationEventService {
         }
     }
 
-    /// Clears awaiting_server_echo_events entries that match the given IDs.
+    /// Clears awaiting and pending entries that match the given echoed IDs.
     fn acknowledge_delivery_from_server_echo(
         &mut self,
         conversation_id: AIConversationId,
@@ -512,26 +519,34 @@ impl OrchestrationEventService {
             .iter()
             .map(String::as_str)
             .collect();
-        let should_remove_entry = {
-            let Some(awaiting_events) = self.awaiting_server_echo_events.get_mut(&conversation_id)
-            else {
-                return;
-            };
-
-            awaiting_events.retain(|pending_event| {
-                let was_echoed = did_event_round_trip_through_server(
-                    pending_event,
-                    &echoed_message_ids,
-                    &echoed_lifecycle_event_ids,
-                );
-                !was_echoed
-            });
-
-            awaiting_events.is_empty()
+        let was_echoed = |pending_event: &PendingEvent| {
+            did_event_round_trip_through_server(
+                pending_event,
+                &echoed_message_ids,
+                &echoed_lifecycle_event_ids,
+            )
         };
 
-        if should_remove_entry {
-            self.awaiting_server_echo_events.remove(&conversation_id);
+        if let Some(awaiting_events) = self.awaiting_server_echo_events.get_mut(&conversation_id) {
+            awaiting_events.retain(|event| !was_echoed(event));
+            if awaiting_events.is_empty() {
+                self.awaiting_server_echo_events.remove(&conversation_id);
+            }
+        }
+
+        if let Some(pending_events) = self.pending_events.get_mut(&conversation_id) {
+            let before = pending_events.len();
+            pending_events.retain(|event| !was_echoed(event));
+            let dropped = before - pending_events.len();
+            if dropped > 0 {
+                log::info!(
+                    "Dropped {dropped} pending orchestration event(s) for conversation \
+                     {conversation_id:?} already delivered by another route"
+                );
+            }
+            if pending_events.is_empty() {
+                self.pending_events.remove(&conversation_id);
+            }
         }
     }
 }
@@ -583,6 +598,7 @@ fn lifecycle_event_detail_from_type(
         LifecycleEventType::InProgress => {
             Some(api::agent_event::lifecycle_event::Detail::InProgress(()))
         }
+        LifecycleEventType::Waiting => Some(api::agent_event::lifecycle_event::Detail::Waiting(())),
         LifecycleEventType::Succeeded => {
             Some(api::agent_event::lifecycle_event::Detail::Succeeded(()))
         }
@@ -601,7 +617,11 @@ fn lifecycle_event_detail_from_type(
             Some(api::agent_event::lifecycle_event::Detail::InProgress(()))
         }
         LifecycleEventType::Cancelled => {
-            Some(api::agent_event::lifecycle_event::Detail::Cancelled(()))
+            Some(api::agent_event::lifecycle_event::Detail::Cancelled(
+                api::agent_event::lifecycle_event::Cancelled {
+                    reason: detail_payload.reason.clone().unwrap_or_default(),
+                },
+            ))
         }
         LifecycleEventType::Blocked => Some(api::agent_event::lifecycle_event::Detail::Blocked(
             api::agent_event::lifecycle_event::Blocked {
@@ -610,10 +630,7 @@ fn lifecycle_event_detail_from_type(
         )),
         LifecycleEventType::Errored => Some(api::agent_event::lifecycle_event::Detail::Errored(
             api::agent_event::lifecycle_event::Errored {
-                stage: detail_payload
-                    .stage
-                    .map(|stage| stage.as_str().to_string())
-                    .unwrap_or_default(),
+                stage: String::new(),
                 reason: detail_payload.reason.clone().unwrap_or_default(),
                 error_message: detail_payload.error_message.clone().unwrap_or_default(),
             },
@@ -629,6 +646,9 @@ pub(super) fn lifecycle_event_type_from_proto(
     match lifecycle_event.detail.as_ref() {
         Some(api::agent_event::lifecycle_event::Detail::InProgress(_)) => {
             api::LifecycleEventType::InProgress
+        }
+        Some(api::agent_event::lifecycle_event::Detail::Waiting(_)) => {
+            api::LifecycleEventType::Waiting
         }
         Some(api::agent_event::lifecycle_event::Detail::Succeeded(_)) => {
             api::LifecycleEventType::Succeeded

@@ -99,6 +99,8 @@ fn enabled_features() -> HashSet<FeatureFlag> {
         FeatureFlag::CloudRunners,
         #[cfg(feature = "cloud_agent_runners")]
         FeatureFlag::CloudAgentRunners,
+        #[cfg(feature = "cloud_agent_execution_config")]
+        FeatureFlag::CloudAgentExecutionConfig,
         #[cfg(feature = "account_first_onboarding")]
         FeatureFlag::AccountFirstOnboarding,
         #[cfg(all(feature = "simulate_github_unauthed", debug_assertions))]
@@ -323,8 +325,12 @@ fn enabled_features() -> HashSet<FeatureFlag> {
         FeatureFlag::MCPGroupedServerContext,
         #[cfg(feature = "well_known_mcp_ids")]
         FeatureFlag::WellKnownMcpIds,
+        #[cfg(feature = "managed_mcp_credential_refresh")]
+        FeatureFlag::ManagedMcpCredentialRefresh,
         #[cfg(feature = "factory_mcp")]
         FeatureFlag::FactoryMcp,
+        #[cfg(feature = "preview_urls_mcp")]
+        FeatureFlag::PreviewUrlsMcp,
         #[cfg(feature = "web_search_ui")]
         FeatureFlag::WebSearchUI,
         #[cfg(feature = "web_fetch_ui")]
@@ -441,16 +447,14 @@ fn enabled_features() -> HashSet<FeatureFlag> {
         FeatureFlag::ConversationsAsContext,
         #[cfg(feature = "incremental_auto_reload")]
         FeatureFlag::IncrementalAutoReload,
-        #[cfg(feature = "wait_for_events_parent_registration")]
-        FeatureFlag::WaitForEventsParentRegistration,
-        #[cfg(feature = "orchestration_unified_stack")]
-        FeatureFlag::OrchestrationUnifiedStack,
         #[cfg(feature = "pending_user_query_indicator")]
         FeatureFlag::PendingUserQueryIndicator,
         #[cfg(feature = "queue_slash_command")]
         FeatureFlag::QueueSlashCommand,
         #[cfg(feature = "queued_prompts_v2")]
         FeatureFlag::QueuedPromptsV2,
+        #[cfg(feature = "agent_prompt_steering")]
+        FeatureFlag::AgentPromptSteering,
         #[cfg(feature = "kitty_keyboard_protocol")]
         FeatureFlag::KittyKeyboardProtocol,
         #[cfg(feature = "inline_menu_headers")]
@@ -477,6 +481,8 @@ fn enabled_features() -> HashSet<FeatureFlag> {
         FeatureFlag::AgentHarness,
         #[cfg(feature = "oz_handoff")]
         FeatureFlag::OzHandoff,
+        #[cfg(feature = "restore_local_subtree")]
+        FeatureFlag::RestoreLocalSubtree,
         #[cfg(feature = "handoff_local_cloud")]
         FeatureFlag::HandoffLocalCloud,
         #[cfg(feature = "hoa_notifications")]
@@ -517,12 +523,16 @@ fn enabled_features() -> HashSet<FeatureFlag> {
         FeatureFlag::HandoffCloudCloud,
         #[cfg(feature = "git_credential_refresh")]
         FeatureFlag::GitCredentialRefresh,
+        #[cfg(feature = "factory_deferred_repositories")]
+        FeatureFlag::FactoryDeferredRepositories,
         #[cfg(feature = "remote_code_review")]
         FeatureFlag::RemoteCodeReview,
         #[cfg(feature = "custom_model_routers")]
         FeatureFlag::CustomModelRouters,
         #[cfg(feature = "supergrok")]
         FeatureFlag::SuperGrok,
+        #[cfg(feature = "chatgpt_subscription")]
+        FeatureFlag::ChatGPTSubscription,
         #[cfg(feature = "gemini_enterprise")]
         FeatureFlag::GeminiEnterprise,
         #[cfg(feature = "nld_prompt_history_match")]
@@ -535,6 +545,16 @@ fn enabled_features() -> HashSet<FeatureFlag> {
         FeatureFlag::TerminalLifecycleRecovery,
         #[cfg(feature = "ctrl_c_cancels_third_party_harness")]
         FeatureFlag::CtrlCCancelsThirdPartyHarness,
+        #[cfg(feature = "shell_widget_handoff")]
+        FeatureFlag::ShellWidgetHandoff,
+        #[cfg(feature = "history_search_ranking_v2")]
+        FeatureFlag::HistorySearchRankingV2,
+        #[cfg(feature = "stored_screenshots")]
+        FeatureFlag::StoredScreenshots,
+        #[cfg(feature = "cloud_agent_shell_respawn")]
+        FeatureFlag::CloudAgentShellRespawn,
+        #[cfg(feature = "acp_harness")]
+        FeatureFlag::AcpHarness,
     ]);
 
     flags

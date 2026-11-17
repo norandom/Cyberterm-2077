@@ -25,6 +25,10 @@ mod bundled;
     feature = "hosted_agent_sdk"
 ))]
 pub(crate) use bundled::{BundledSkill, BundledSkillActivation};
+#[cfg(all(feature = "local_fs", feature = "hosted_agent_sdk"))]
+pub(crate) use bundled::{
+    FACTORY_DEFERRED_REPOSITORIES_SKILL, factory_deferred_repositories_skill_path,
+};
 
 cfg_if::cfg_if! {
     if #[cfg(not(all(feature = "local_fs", feature = "hosted_agent_sdk")))] {

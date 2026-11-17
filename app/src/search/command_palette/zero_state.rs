@@ -84,6 +84,10 @@ impl ZeroState {
         let show_warp_drive = WarpDriveSettings::is_warp_drive_enabled(app);
 
         let mut valid_filters = vec![];
+        #[cfg(all(feature = "warpeer", feature = "local_fs"))]
+        if !show_warp_drive {
+            valid_filters.push(QueryFilter::Notebooks);
+        }
         if show_warp_drive {
             valid_filters.push(QueryFilter::Workflows);
             if FeatureFlag::AgentModeWorkflows.is_enabled()

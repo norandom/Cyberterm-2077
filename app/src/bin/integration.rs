@@ -33,6 +33,7 @@ pub fn main() -> Result<()> {
                 // Use an IP in the IANA testing range, with the TCP discard port, to
                 // black-hole server traffic.
                 server_root_url: "http://192.0.2.0:9".into(),
+                prewarmed_sandbox_control_url: None,
                 rtc_server_url: "ws://192.0.2.0:9/graphql/v2".into(),
                 session_sharing_server_url: None,
                 iap_config: None,
@@ -67,7 +68,6 @@ pub fn main() -> Result<()> {
             WorkerCommand::RemoteServerProxy(_) | WorkerCommand::RemoteServerDaemon(_) => {
                 return warp::run();
             }
-            // This is a catch-all to handle the plugin host, which the integration test crate doesn't have a feature flag for.
             #[allow(unreachable_patterns)]
             other => panic!("Worker not supported in integration tests: {other:?}"),
         }

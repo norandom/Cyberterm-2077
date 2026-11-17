@@ -1,5 +1,7 @@
 //! Frontend-neutral preparation and settings propagation for local Oz children.
 #[cfg(not(target_family = "wasm"))]
+use std::collections::HashMap;
+#[cfg(not(target_family = "wasm"))]
 use std::future::Future;
 
 use warpui::{AppContext, EntityId, SingletonEntity as _};
@@ -10,6 +12,7 @@ use {
     crate::ai::ambient_agents::{AgentConfigSnapshot, AmbientAgentTaskId},
     crate::ai::blocklist::{BlocklistAIHistoryModel, StartAgentRequestId},
     crate::server::server_api::ServerApiProvider,
+    crate::server::team_scope::RequestTeamScope,
 };
 
 use crate::AIExecutionProfilesModel;
@@ -32,6 +35,8 @@ pub fn prepare_local_oz_child_launch(
     name: &str,
     prompt: &str,
     parent_run_id: Option<&str>,
+    metadata: &HashMap<String, String>,
+    team_scope: RequestTeamScope,
     ctx: &AppContext,
 ) -> impl Future<Output = anyhow::Result<PreparedLocalOzChildLaunch>> + 'static + use<> {
     let ai_client = ServerApiProvider::as_ref(ctx).get_ai_client();
@@ -39,6 +44,7 @@ pub fn prepare_local_oz_child_launch(
     let conversation_name = agent_name.clone().unwrap_or_default();
     let prompt = prompt.to_owned();
     let parent_run_id = parent_run_id.map(str::to_owned);
+    let metadata = metadata.clone();
     async move {
         let task_id = ai_client
             .create_agent_task(
@@ -49,6 +55,8 @@ pub fn prepare_local_oz_child_launch(
                     name: agent_name,
                     ..Default::default()
                 }),
+                metadata,
+                team_scope,
             )
             .await?;
         Ok(PreparedLocalOzChildLaunch {

@@ -51,6 +51,8 @@ pub struct IapState {
 }
 
 impl IapState {
+    pub fn set_routing_opt_in(&self, _enabled: bool) {}
+
     pub fn new(config: &IapConfig) -> Self {
         Self {
             audiences: config.audiences.to_string(),

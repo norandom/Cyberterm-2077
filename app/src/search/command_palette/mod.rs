@@ -1,6 +1,6 @@
 pub mod conversations;
 mod data_sources;
-mod files;
+pub(crate) mod files;
 mod filter_chip_renderer;
 pub mod launch_config;
 pub mod mixer;

@@ -10,10 +10,14 @@ use http::StatusCode;
 use warp_graphql::client::{GraphQLError, RequestOptions};
 use warp_server_auth::auth_state::AuthState;
 
-use super::{send_graphql_request, send_team_scoped_graphql_request};
+use super::{
+    send_graphql_request, send_task_scoped_graphql_request, send_team_scoped_graphql_request,
+};
 use crate::auth::AuthEvent;
 use crate::base_client::{
-    AuthenticatedGraphqlConfig, BaseClient, GraphqlRoutingConfig, TEAM_UID_HEADER,
+    AMBIENT_WORKLOAD_TOKEN_HEADER, AuthenticatedGraphqlConfig, BaseClient, CLOUD_AGENT_ID_HEADER,
+    GraphqlRoutingConfig, PREWARMED_SANDBOX_ID_HEADER, PREWARMED_SANDBOX_WORKLOAD_TOKEN_HEADER,
+    TEAM_UID_HEADER,
 };
 
 fn base_client(auth_state: AuthState) -> (BaseClient, async_channel::Receiver<AuthEvent>) {
@@ -21,6 +25,7 @@ fn base_client(auth_state: AuthState) -> (BaseClient, async_channel::Receiver<Au
     (
         BaseClient::new(
             Arc::new(http_client::Client::new()),
+            Arc::new(http_client::Client::new_external()),
             Arc::new(auth_state),
             event_sender,
             None,
@@ -30,6 +35,101 @@ fn base_client(auth_state: AuthState) -> (BaseClient, async_channel::Receiver<Au
         ),
         event_receiver,
     )
+}
+
+#[test]
+fn task_scoped_requests_preserve_workload_and_global_identity() {
+    let (client, events) = externally_authenticated_base_client("daemon-token");
+    client.set_ambient_agent_task_id(Some("global-run".to_string()));
+    client.set_ambient_workload_token_for_test("workload-proof".to_string(), None);
+    let sends = Arc::new(AtomicUsize::new(0));
+    let operation = |run_id: &str| {
+        let mut operation = FakeGraphqlOperation::successful(Some("daemon-token"), sends.clone());
+        operation.expected_ambient = Some((run_id.to_string(), Some("workload-proof".to_string())));
+        operation
+    };
+    block_on(async {
+        let (first, second) = futures::join!(
+            send_task_scoped_graphql_request(
+                &client,
+                operation("first-run"),
+                None,
+                "first-run".to_string(),
+            ),
+            send_task_scoped_graphql_request(
+                &client,
+                operation("second-run"),
+                None,
+                "second-run".to_string(),
+            )
+        );
+        first.unwrap();
+        second.unwrap();
+        send_graphql_request(&client, operation("global-run"), None)
+            .await
+            .unwrap();
+    });
+    assert_eq!(sends.load(Ordering::SeqCst), 3);
+    assert_no_events(&events);
+}
+
+#[test]
+fn task_scoped_request_supports_interactive_client_without_ambient_identity() {
+    let (client, events) = externally_authenticated_base_client("daemon-token");
+    client.set_ambient_workload_token_for_test("workload-proof".to_string(), None);
+    let sends = Arc::new(AtomicUsize::new(0));
+    let mut operation = FakeGraphqlOperation::successful(Some("daemon-token"), sends.clone());
+    operation.expected_ambient = Some((
+        "conversation-run".to_string(),
+        Some("workload-proof".to_string()),
+    ));
+    block_on(send_task_scoped_graphql_request(
+        &client,
+        operation,
+        None,
+        "conversation-run".to_string(),
+    ))
+    .unwrap();
+    let options = block_on(client.graphql_request_options(None)).unwrap();
+    assert!(!options.headers.contains_key(CLOUD_AGENT_ID_HEADER));
+    assert_eq!(sends.load(Ordering::SeqCst), 1);
+    assert_no_events(&events);
+}
+
+#[test]
+fn task_scoped_request_rejects_standby_without_sending() {
+    let (client, events) = externally_authenticated_base_client("daemon-token");
+    client.set_prewarmed_sandbox_id("standby".to_string());
+    client.set_ambient_workload_token_for_test("standby-proof".to_string(), None);
+    let sends = Arc::new(AtomicUsize::new(0));
+    let error = block_on(send_task_scoped_graphql_request(
+        &client,
+        FakeGraphqlOperation::successful(Some("daemon-token"), sends.clone()),
+        None,
+        "run".to_string(),
+    ))
+    .unwrap_err();
+    assert!(error.to_string().contains("standby"));
+    assert_eq!(sends.load(Ordering::SeqCst), 0);
+    assert_no_events(&events);
+}
+
+#[test]
+fn task_scoped_request_rejects_empty_task_without_sending() {
+    let (client, events) = externally_authenticated_base_client("daemon-token");
+    let sends = Arc::new(AtomicUsize::new(0));
+    for task_id in ["", " "] {
+        let error = block_on(send_task_scoped_graphql_request(
+            &client,
+            FakeGraphqlOperation::successful(Some("daemon-token"), sends.clone()),
+            None,
+            task_id.to_string(),
+        ))
+        .unwrap_err();
+        assert!(error.to_string().contains("Task ID"));
+    }
+    assert_eq!(sends.load(Ordering::SeqCst), 0);
+    assert_no_events(&events);
 }
 
 #[test]
@@ -83,6 +183,7 @@ fn assert_user_disabled_event(event_receiver: &async_channel::Receiver<AuthEvent
 struct FakeGraphqlOperation {
     expected_auth_token: Option<String>,
     expected_team_uid: Option<String>,
+    expected_ambient: Option<(String, Option<String>)>,
     send_count: Arc<AtomicUsize>,
     result: FakeGraphqlResult,
 }
@@ -98,6 +199,21 @@ impl FakeGraphqlOperation {
         Self {
             expected_auth_token: expected_auth_token.map(ToOwned::to_owned),
             expected_team_uid: None,
+            expected_ambient: None,
+            send_count,
+            result: FakeGraphqlResult::Success,
+        }
+    }
+
+    fn successful_for_team(
+        expected_auth_token: Option<&str>,
+        expected_team_uid: &str,
+        send_count: Arc<AtomicUsize>,
+    ) -> Self {
+        Self {
+            expected_auth_token: expected_auth_token.map(ToOwned::to_owned),
+            expected_team_uid: Some(expected_team_uid.to_string()),
+            expected_ambient: None,
             send_count,
             result: FakeGraphqlResult::Success,
         }
@@ -113,6 +229,7 @@ impl FakeGraphqlOperation {
             expected_team_uid: None,
             send_count,
             result: FakeGraphqlResult::Rejected(status),
+            expected_ambient: None,
         }
     }
 
@@ -126,13 +243,8 @@ impl FakeGraphqlOperation {
             expected_team_uid: None,
             send_count,
             result: FakeGraphqlResult::ResponseErrors(messages),
+            expected_ambient: None,
         }
-    }
-
-    /// Asserts that the resolved request options carry (or omit) this exact team header.
-    fn expect_team_uid(mut self, expected_team_uid: Option<&str>) -> Self {
-        self.expected_team_uid = expected_team_uid.map(ToOwned::to_owned);
-        self
     }
 }
 
@@ -158,9 +270,22 @@ impl warp_graphql::client::Operation<()> for FakeGraphqlOperation {
         Box::pin(async move {
             assert_eq!(options.auth_token, self.expected_auth_token);
             assert_eq!(
-                options.headers.get(TEAM_UID_HEADER).cloned(),
-                self.expected_team_uid
+                options.headers.get(TEAM_UID_HEADER),
+                self.expected_team_uid.as_ref()
             );
+            if let Some((task_id, workload_token)) = self.expected_ambient {
+                assert_eq!(options.headers.get(CLOUD_AGENT_ID_HEADER), Some(&task_id));
+                assert_eq!(
+                    options.headers.get(AMBIENT_WORKLOAD_TOKEN_HEADER),
+                    workload_token.as_ref()
+                );
+                assert!(!options.headers.contains_key(PREWARMED_SANDBOX_ID_HEADER));
+                assert!(
+                    !options
+                        .headers
+                        .contains_key(PREWARMED_SANDBOX_WORKLOAD_TOKEN_HEADER)
+                );
+            }
             self.send_count.fetch_add(1, Ordering::SeqCst);
             match self.result {
                 FakeGraphqlResult::Success => Ok(GraphQlResponse {
@@ -219,6 +344,27 @@ fn refresh_disabled_sends_provided_bearer_token() {
     .unwrap();
 
     assert!(!base_client.is_auth_refresh_allowed());
+    assert_eq!(send_count.load(Ordering::SeqCst), 1);
+    assert_no_events(&event_receiver);
+}
+
+#[test]
+fn team_scoped_request_sends_configured_options_and_team_header() {
+    let (base_client, event_receiver) = externally_authenticated_base_client("daemon-token");
+    let send_count = Arc::new(AtomicUsize::new(0));
+
+    block_on(send_team_scoped_graphql_request(
+        &base_client,
+        FakeGraphqlOperation::successful_for_team(
+            Some("daemon-token"),
+            "team-uid",
+            send_count.clone(),
+        ),
+        None,
+        "team-uid".to_string(),
+    ))
+    .unwrap();
+
     assert_eq!(send_count.load(Ordering::SeqCst), 1);
     assert_no_events(&event_receiver);
 }
@@ -287,42 +433,6 @@ fn external_user_not_in_context_returns_credentials_rejected_without_account_eve
         &error,
         "server rejected authentication credentials"
     ));
-    assert_eq!(send_count.load(Ordering::SeqCst), 1);
-    assert_no_events(&event_receiver);
-}
-
-#[test]
-fn team_scoped_send_attaches_team_header_when_scope_is_supplied() {
-    let (base_client, event_receiver) = externally_authenticated_base_client("daemon-token");
-    let send_count = Arc::new(AtomicUsize::new(0));
-
-    block_on(send_team_scoped_graphql_request(
-        &base_client,
-        FakeGraphqlOperation::successful(Some("daemon-token"), send_count.clone())
-            .expect_team_uid(Some("team-123")),
-        None,
-        Some("team-123".to_string()),
-    ))
-    .unwrap();
-
-    assert_eq!(send_count.load(Ordering::SeqCst), 1);
-    assert_no_events(&event_receiver);
-}
-
-#[test]
-fn team_scoped_send_omits_team_header_when_scope_is_absent() {
-    let (base_client, event_receiver) = externally_authenticated_base_client("daemon-token");
-    let send_count = Arc::new(AtomicUsize::new(0));
-
-    block_on(send_team_scoped_graphql_request(
-        &base_client,
-        FakeGraphqlOperation::successful(Some("daemon-token"), send_count.clone())
-            .expect_team_uid(None),
-        None,
-        None,
-    ))
-    .unwrap();
-
     assert_eq!(send_count.load(Ordering::SeqCst), 1);
     assert_no_events(&event_receiver);
 }

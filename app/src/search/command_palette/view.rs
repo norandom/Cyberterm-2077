@@ -85,6 +85,8 @@ pub enum Action {
 
 #[derive(Debug)]
 pub enum Event {
+    #[cfg(all(feature = "warpeer", feature = "local_fs"))]
+    OpenLocalRunbook { path: std::path::PathBuf },
     Close {
         accepted_action_type: Option<&'static str>,
     },
@@ -893,6 +895,10 @@ impl View {
                         ui_location: LaunchConfigUiLocation::CommandPalette,
                     },
                 );
+            }
+            #[cfg(all(feature = "warpeer", feature = "local_fs"))]
+            CommandPaletteItemAction::OpenLocalRunbook { path } => {
+                ctx.emit(Event::OpenLocalRunbook { path })
             }
             CommandPaletteItemAction::ExecuteWorkflow { id } => {
                 ctx.emit(Event::ExecuteWorkflow { id })

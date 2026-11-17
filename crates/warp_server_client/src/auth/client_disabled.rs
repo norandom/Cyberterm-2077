@@ -2,6 +2,7 @@ use std::result::Result as StdResult;
 
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
+use cloud_objects::ids::ServerId;
 use instant::Duration;
 use warp_graphql::mutations::create_anonymous_user::{
     AnonymousUserType, CreateAnonymousUserResult,
@@ -108,7 +109,7 @@ impl AuthClient for AuthClientImpl {
         Err(authentication_unavailable())
     }
 
-    async fn list_api_keys(&self) -> Result<Vec<ApiKeyProperties>> {
+    async fn list_api_keys(&self, _team_uid: Option<ServerId>) -> Result<Vec<ApiKeyProperties>> {
         unavailable()
     }
 
@@ -126,7 +127,10 @@ impl AuthClient for AuthClientImpl {
         unavailable()
     }
 
-    async fn list_agent_identities(&self) -> Result<Vec<AgentIdentity>> {
+    async fn list_agent_identities(
+        &self,
+        _team_uid: Option<ServerId>,
+    ) -> Result<Vec<AgentIdentity>> {
         unavailable()
     }
 }

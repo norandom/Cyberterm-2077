@@ -95,6 +95,8 @@ x11rb = { workspace = true, optional = true, features = ["composite", "xinput", 
 zbus = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
+tokio = { workspace = true, features = ["io-util", "process", "time"] }
+uuid.workspace = true
 image = { workspace = true, optional = true }
 warpui_core = { workspace = true, optional = true }
 windows = { workspace = true, optional = true, features = [
@@ -108,6 +110,7 @@ windows = { workspace = true, optional = true, features = [
 
 [dev-dependencies]
 computer_use = { path = ".", default-features = false, features = ["test-util"] }
+serde_json.workspace = true
 
 [build-dependencies]
 cfg_aliases = "0.2.1"

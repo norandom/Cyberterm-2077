@@ -18,6 +18,10 @@ pub type CommandPaletteMixer = SearchMixer<CommandPaletteItemAction>;
 
 #[derive(Clone, Debug)]
 pub enum CommandPaletteItemAction {
+    #[cfg(all(feature = "warpeer", feature = "local_fs"))]
+    OpenLocalRunbook {
+        path: std::path::PathBuf,
+    },
     /// A binding result was clicked.
     AcceptBinding {
         binding: Arc<CommandBinding>,
@@ -88,6 +92,12 @@ pub enum CommandPaletteItemAction {
 impl CommandPaletteItemAction {
     pub fn to_summary(&self) -> ItemSummary {
         match self {
+            #[cfg(all(feature = "warpeer", feature = "local_fs"))]
+            Self::OpenLocalRunbook { path } => ItemSummary::File {
+                path: path.to_string_lossy().into_owned(),
+                project_directory: String::new(),
+                line_and_column_arg: None,
+            },
             CommandPaletteItemAction::AcceptBinding { binding } => ItemSummary::Action {
                 binding_id: binding.id,
             },

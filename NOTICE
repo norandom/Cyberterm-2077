@@ -9,6 +9,10 @@ The modifications turn Warp into a terminal-only product: account, cloud, hosted
 telemetry, and auto-update features are removed or disabled, and Warpeer-specific
 terminal, pane, theme, and privacy features are added.
 
+This fork additionally integrates Warp upstream through commit
+0f81fad401df526e440083f95efa287a2e02f5b3 (2026-11-17), adds local Markdown
+runbooks, and builds Windows x86-64, Linux x86-64, and macOS ARM64 packages.
+
 Licensing:
 
 - crates/warpui_core and crates/warpui are licensed under the MIT license (LICENSE-MIT).

@@ -41,7 +41,8 @@ pub mod text {
             | AIAgentInput::MessagesReceivedFromAgents { .. }
             | AIAgentInput::PassiveSuggestionResult { .. }
             | AIAgentInput::EventsFromAgents { .. }
-            | AIAgentInput::OrchestrationConfigUpdate { .. } => {
+            | AIAgentInput::OrchestrationConfigUpdate { .. }
+            | AIAgentInput::AgentWake => {
                 // Do not include the user query, since it's already provided as input to the agent.
                 Ok(())
             }
@@ -56,12 +57,22 @@ pub mod text {
                         exit_code,
                         ..
                     } => writeln!(w, "{output}\n\n (`{command}` exited with code {exit_code})"),
+                    RequestCommandOutputResult::ShellRecovered {
+                        command,
+                        output,
+                        status,
+                        ..
+                    } => writeln!(
+                        w,
+                        "{output}\n\n (`{command}` terminated the persistent shell: {status})"
+                    ),
                     RequestCommandOutputResult::LongRunningCommandSnapshot { command, .. } => {
                         writeln!(w, "`{command}` is still running...")
                     }
                     RequestCommandOutputResult::CancelledBeforeExecution => {
                         writeln!(w, "{CANCELLED_MESSAGE}")
                     }
+                    RequestCommandOutputResult::TerminalBusy { .. } => writeln!(w, "{result}"),
                     RequestCommandOutputResult::Denylisted { .. } => {
                         writeln!(
                             w,
@@ -69,6 +80,9 @@ pub mod text {
                         )
                     }
                 },
+                AIAgentActionResultType::DeniedByHook { reason } => {
+                    writeln!(w, "Denied by an agent hook: {reason}")
+                }
                 AIAgentActionResultType::WriteToLongRunningShellCommand(result) => match result {
                     WriteToLongRunningShellCommandResult::Snapshot { .. } => {
                         writeln!(w, "Command is still running...")
@@ -189,6 +203,7 @@ pub mod text {
                                     "{uri} ({})",
                                     mime_type.as_deref().unwrap_or("text/plain")
                                 )?,
+                                _ => writeln!(w, "unsupported resource contents")?,
                             }
                         }
                         Ok(())
@@ -233,6 +248,9 @@ pub mod text {
                                                 "{uri} ({})",
                                                 mime_type.as_deref().unwrap_or("text/plain")
                                             )?;
+                                        }
+                                        _ => {
+                                            writeln!(w, "unsupported resource contents")?;
                                         }
                                     };
                                 }
@@ -288,7 +306,7 @@ pub mod text {
                 AIAgentActionResultType::TransferShellCommandControlToUser { .. } => Ok(()),
                 AIAgentActionResultType::UseComputer(result) => match result {
                     // TODO(AGENT-2281): implement
-                    UseComputerResult::Success(_result) => Ok(()),
+                    UseComputerResult::Success { .. } => Ok(()),
                     UseComputerResult::Error(error) => writeln!(w, "Use computer error: {error}"),
                     UseComputerResult::Cancelled => writeln!(w, "{CANCELLED_MESSAGE}"),
                 },
@@ -557,6 +575,26 @@ pub mod text {
         writeln!(w, "Sharing session at: {join_url}")
     }
 
+    /// Report a notice from the run's agent hooks, as one line.
+    pub fn hook_notice<W: Write>(kind: &str, text: &str, w: &mut W) -> io::Result<()> {
+        writeln!(w, "hook: {kind}: {}", super::single_line(text))
+    }
+
+    /// Report a problem with one of the run's hook sources, as one line.
+    pub fn hook_diagnostic<W: Write>(
+        source: &str,
+        severity: &str,
+        message: &str,
+        w: &mut W,
+    ) -> io::Result<()> {
+        writeln!(
+            w,
+            "hook: {severity}: {}: {}",
+            super::single_line(source),
+            super::single_line(message)
+        )
+    }
+
     /// Format a list of query patterns.
     fn format_queries<I: IntoIterator<Item = S>, S: fmt::Display>(queries: I) -> String {
         match queries.into_iter().exactly_one() {
@@ -644,6 +682,20 @@ pub mod json {
         SkillInvoked {
             name: &'a str,
         },
+        #[serde(rename = "hook_notice")]
+        HookNotice {
+            kind: &'a str,
+            conversation_id: Option<&'a str>,
+            local_conversation_id: &'a str,
+            action_id: Option<&'a str>,
+            text: &'a str,
+        },
+        #[serde(rename = "hook_diagnostic")]
+        HookDiagnostic {
+            source: &'a str,
+            severity: &'a str,
+            message: &'a str,
+        },
     }
 
     #[derive(Serialize)]
@@ -711,7 +763,11 @@ pub mod json {
     #[derive(Serialize)]
     #[serde(tag = "status", rename_all = "snake_case")]
     enum JsonRunCommandResult<'a> {
-        Complete { exit_code: i32, output: &'a str },
+        Complete {
+            #[serde(skip_serializing_if = "Option::is_none")]
+            exit_code: Option<i32>,
+            output: &'a str,
+        },
         Running,
     }
 
@@ -832,7 +888,8 @@ pub mod json {
                 | AIAgentInput::MessagesReceivedFromAgents { .. }
                 | AIAgentInput::EventsFromAgents { .. }
                 | AIAgentInput::PassiveSuggestionResult { .. }
-                | AIAgentInput::OrchestrationConfigUpdate { .. } => None,
+                | AIAgentInput::OrchestrationConfigUpdate { .. }
+                | AIAgentInput::AgentWake => None,
                 // These input types should not occur in a SDK-run agent.
                 AIAgentInput::ResumeConversation { .. }
                 | AIAgentInput::TriggerPassiveSuggestion { .. } => None,
@@ -849,10 +906,18 @@ pub mod json {
                         output, exit_code, ..
                     } => Some(JsonMessage::ToolResult(JsonToolResult::RunCommand(
                         JsonRunCommandResult::Complete {
-                            exit_code: exit_code.value(),
+                            exit_code: Some(exit_code.value()),
                             output,
                         },
                     ))),
+                    RequestCommandOutputResult::ShellRecovered { output, status, .. } => {
+                        Some(JsonMessage::ToolResult(JsonToolResult::RunCommand(
+                            JsonRunCommandResult::Complete {
+                                exit_code: status.code(),
+                                output,
+                            },
+                        )))
+                    }
                     RequestCommandOutputResult::LongRunningCommandSnapshot { .. } => {
                         Some(JsonMessage::ToolResult(JsonToolResult::RunCommand(
                             JsonRunCommandResult::Running,
@@ -866,7 +931,15 @@ pub mod json {
                             "Command was not allowed to run due to presence on denylist",
                         ),
                     }),
+                    RequestCommandOutputResult::TerminalBusy { .. } => {
+                        Some(JsonMessage::ToolError {
+                            error: Cow::Owned(result.to_string()),
+                        })
+                    }
                 },
+                AIAgentActionResultType::DeniedByHook { .. } => Some(JsonMessage::ToolError {
+                    error: Cow::Owned(result.to_string()),
+                }),
                 AIAgentActionResultType::WriteToLongRunningShellCommand(result) => match result {
                     WriteToLongRunningShellCommandResult::Snapshot { .. } => {
                         Some(JsonMessage::ToolResult(JsonToolResult::RunCommand(
@@ -879,7 +952,7 @@ pub mod json {
                         ..
                     } => Some(JsonMessage::ToolResult(JsonToolResult::RunCommand(
                         JsonRunCommandResult::Complete {
-                            exit_code: exit_code.value(),
+                            exit_code: Some(exit_code.value()),
                             output,
                         },
                     ))),
@@ -1338,6 +1411,41 @@ pub mod json {
         let message = JsonMessage::System(JsonSystemEvent::SharedSessionEstablished { join_url });
         write_message(&message, w)
     }
+
+    /// Write a notice from the run's agent hooks as a `hook_notice` record. `conversation_id` is
+    /// the server token `conversation_started` reports, once the server has assigned one.
+    pub fn hook_notice<W: Write>(
+        kind: &str,
+        conversation_id: Option<&str>,
+        local_conversation_id: &str,
+        action_id: Option<&str>,
+        text: &str,
+        w: &mut W,
+    ) -> io::Result<()> {
+        let message = JsonMessage::HookNotice {
+            kind,
+            conversation_id,
+            local_conversation_id,
+            action_id,
+            text,
+        };
+        write_message(&message, w)
+    }
+
+    /// Write a problem with one of the run's hook sources as a `hook_diagnostic` record.
+    pub fn hook_diagnostic<W: Write>(
+        source: &str,
+        severity: &str,
+        message: &str,
+        w: &mut W,
+    ) -> io::Result<()> {
+        let message = JsonMessage::HookDiagnostic {
+            source,
+            severity,
+            message,
+        };
+        write_message(&message, w)
+    }
 }
 
 use std::io::{self, BufWriter, Write};
@@ -1351,6 +1459,11 @@ use crate::code::editor_management::CodeSource;
 fn run_url(run_id: &str) -> String {
     let oz_root_url = ChannelState::oz_root_url();
     format!("{oz_root_url}/runs/{run_id}")
+}
+
+/// Joins `text`'s lines with spaces, so a record in text output stays on one line.
+fn single_line(text: &str) -> String {
+    text.lines().collect::<Vec<_>>().join(" ")
 }
 
 /// Execute a closure with a buffered stdout writer and flush it afterwards.

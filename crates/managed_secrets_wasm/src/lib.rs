@@ -118,7 +118,24 @@ pub fn encrypt_openai_api_key_secret(
     )
 }
 
-/// Encrypt a container registry credential secret.
+/// Encrypt an API key secret scoped to a single LLM provider.
+#[wasm_bindgen]
+pub fn encrypt_llm_provider_api_key_secret(
+    public_key_base64: &str,
+    actor_uid: &str,
+    secret_name: &str,
+    provider_id: &str,
+    api_key: &str,
+) -> Result<String, JsValue> {
+    do_encrypt(
+        public_key_base64,
+        actor_uid,
+        secret_name,
+        &ManagedSecretValue::llm_provider_api_key(provider_id, api_key, None),
+    )
+}
+
+/// Encrypt a private image credential secret.
 #[wasm_bindgen]
 pub fn encrypt_docker_registry_secret(
     public_key_base64: &str,
@@ -133,6 +150,23 @@ pub fn encrypt_docker_registry_secret(
         actor_uid,
         secret_name,
         &ManagedSecretValue::docker_registry(registry_host, username, password),
+    )
+}
+
+/// Encrypt an AWS ECR credential secret backed by an IAM role.
+#[wasm_bindgen]
+pub fn encrypt_aws_ecr_credential_secret(
+    public_key_base64: &str,
+    actor_uid: &str,
+    secret_name: &str,
+    registry_host: &str,
+    role_arn: &str,
+) -> Result<String, JsValue> {
+    do_encrypt(
+        public_key_base64,
+        actor_uid,
+        secret_name,
+        &ManagedSecretValue::aws_ecr_credential(registry_host, role_arn),
     )
 }
 
