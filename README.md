@@ -12,6 +12,7 @@ and removes accounts, cloud sync, hosted AI, and other hosted-service features.
 - Bundled Ghostty color themes and configurable terminal motion effects
 - Tab privacy with biometric unlock and pane previews
 - Worktree agent control center for local CLI agents
+- Toolbar shortcuts for New Window, New Tab, New File and the command palette (CP)
 
 Warpeer never sends telemetry or crash reports, does not auto-update, does not run a local HTTP
 server, and does not require sign-in. It stores its data in its own `.warpeer` and application
@@ -37,6 +38,22 @@ Use **Add local runbook folder** and **Browse local runbooks** in the command
 palette to open Markdown documents from your own folders. Shell blocks have an
 explicit Run action. There is no account or synchronization requirement.
 See [local runbooks](docs/local-runbooks.md) for configuration and scan limits.
+
+## Font configuration
+
+To use an installed font throughout the terminal, embedded editor, Markdown
+content, menus and tabs, set the three families in `settings.toml`:
+
+```toml
+[appearance.text]
+font_name = "Fixedsys Excelsior"
+ai_font_name = "Fixedsys Excelsior"
+ui_font_name = "Fixedsys Excelsior"
+```
+
+An empty `ui_font_name` uses the platform default. Missing UI fonts fall back to
+that default. Font sizes remain independent of the family selection; icons use
+the existing SVG assets.
 
 ## Build from source
 

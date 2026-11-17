@@ -37,9 +37,9 @@ dependencies = [
 
 [[package]]
 name = "actix-http"
-version = "3.21.3"
+version = "3.22.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b90352ea64d82226a82060c41dc5fe3925696076f55998ec1bd44ae54611e593"
+checksum = "50f98f47b03911915aa3f0b856749aa3d3915033afabb295ab6ac5ff3b8bd5c1"
 dependencies = [
  "actix-codec",
  "actix-service",
@@ -6315,9 +6315,9 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hifijson"
-version = "0.5.0"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "242402749acf71e6f32f5857598b7002c4058a4e3c3b22b4c7d51cab9aea754e"
+checksum = "5a9dfcf92104a9752d8dbac1879032a51873d7cebcf7e4cb2bdd0513e069440f"
 
 [[package]]
 name = "hkdf"

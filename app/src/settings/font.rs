@@ -14,6 +14,16 @@ pub const DEFAULT_MONOSPACE_FONT_WEIGHT: Weight = Weight::Normal;
 
 define_settings_group!(FontSettings,
     settings: [
+        ui_font_name: UIFontName {
+            type: String,
+            default: String::new(),
+            supported_platforms: SupportedPlatforms::ALL,
+            sync_to_cloud: SyncToCloud::Never,
+            surface: settings::SettingSurfaces::GUI,
+            private: false,
+            toml_path: "appearance.text.ui_font_name",
+            description: "The font used in menus, tabs, and document text. Empty uses the platform default.",
+        },
         monospace_font_name: MonospaceFontName {
             type: String,
             default: DEFAULT_MONOSPACE_FONT_NAME.to_string(),

@@ -60,6 +60,13 @@ impl AppearanceManager {
         ctx.subscribe_to_model(
             &FontSettings::handle(ctx),
             move |_, _, event, ctx| match event {
+                FontSettingsChangedEvent::UIFontName { .. } => {
+                    if let Ok(new_family) = load_configured_ui_font_family(ctx) {
+                        Appearance::handle(ctx).update(ctx, |appearance, ctx| {
+                            appearance.set_ui_font_family(new_family, ctx);
+                        });
+                    }
+                }
                 FontSettingsChangedEvent::MonospaceFontName { .. } => {
                     let (font_name, match_fonts) = {
                         let settings = FontSettings::as_ref(ctx);
@@ -306,6 +313,16 @@ fn load_default_monospace_font_family(ctx: &mut AppContext) -> anyhow::Result<Fa
     })
 }
 
+fn load_configured_ui_font_family(ctx: &mut AppContext) -> anyhow::Result<FamilyId> {
+    let name = FontSettings::as_ref(ctx).ui_font_name.value().clone();
+    if !name.is_empty() {
+        if let Some(family) = get_or_load_font_family(&name, ctx) {
+            return Ok(family);
+        }
+    }
+    load_default_ui_font_family(ctx)
+}
+
 fn load_default_ui_font_family(ctx: &mut AppContext) -> anyhow::Result<FamilyId> {
     warpui::fonts::Cache::handle(ctx).update(ctx, |font_cache, _| {
         let roboto = font_cache.load_family_from_bytes(
@@ -405,7 +422,7 @@ fn build_appearance(ctx: &mut AppContext) -> Appearance {
     let monospace_font_family_from_settings = get_or_load_font_family(&monospace_font_name, ctx);
 
     let ui_font_family =
-        load_default_ui_font_family(ctx).expect("unable to load default ui font family");
+        load_configured_ui_font_family(ctx).expect("unable to load default ui font family");
 
     let am_font_family_from_settings = get_or_load_font_family(&am_font_name, ctx);
 

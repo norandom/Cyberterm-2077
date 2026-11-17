@@ -21826,6 +21826,11 @@ impl Workspace {
             );
         }
 
+        #[cfg(feature = "warpeer")]
+        if !self.is_shared_session_viewer_focused(ctx) {
+            target.add_child(self.render_quick_creation_buttons(appearance, ctx));
+        }
+
         for item in config.right_items() {
             #[cfg(feature = "warpeer")]
             if item == HeaderToolbarItemKind::PaneLayouts {
@@ -21910,6 +21915,98 @@ impl Workspace {
                     .finish(),
             );
         }
+    }
+
+    /// Always-visible local creation actions, immediately before the right-side controls.
+    #[cfg(feature = "warpeer")]
+    fn render_quick_creation_buttons(
+        &self,
+        appearance: &Appearance,
+        ctx: &AppContext,
+    ) -> Box<dyn Element> {
+        let mut row = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_main_axis_size(MainAxisSize::Min);
+        for (icon, mouse, action, label, binding) in [
+            (
+                icons::Icon::Duplicate,
+                &self.mouse_states.quick_new_window,
+                WorkspaceAction::AddWindow,
+                "New Window",
+                NEW_WINDOW_BINDING_NAME,
+            ),
+            (
+                icons::Icon::Plus,
+                &self.mouse_states.quick_new_tab,
+                WorkspaceAction::AddDefaultTab,
+                "New Tab",
+                NEW_TAB_BINDING_NAME,
+            ),
+            (
+                icons::Icon::File,
+                &self.mouse_states.quick_new_file,
+                WorkspaceAction::NewCodeFile,
+                "New File",
+                NEW_FILE_BINDING_NAME,
+            ),
+        ] {
+            row.add_child(
+                Container::new(
+                    self.render_tab_bar_icon_button(
+                        appearance,
+                        icon,
+                        mouse,
+                        action,
+                        label.into(),
+                        keybinding_name_to_display_string(binding, ctx),
+                        false,
+                        false,
+                    )
+                    .finish(),
+                )
+                .with_margin_left(TAB_BAR_ICON_PADDING)
+                .finish(),
+            );
+        }
+        let theme = appearance.theme();
+        let palette = appearance
+            .ui_builder()
+            .button(
+                warpui::ui_components::button::ButtonVariant::Text,
+                self.mouse_states.quick_command_palette.clone(),
+            )
+            .with_centered_text_label("CP".to_string())
+            .with_style(UiComponentStyles {
+                width: Some(32.),
+                height: Some(28.),
+                font_size: Some(12.),
+                padding: Some(Coords::uniform(4.)),
+                font_color: Some(theme.sub_text_color(theme.background()).into()),
+                ..Default::default()
+            })
+            .with_hovered_styles(UiComponentStyles {
+                background: Some(theme.surface_2().into()),
+                ..Default::default()
+            })
+            .with_tooltip(self.render_tab_bar_icon_button_tooltip(
+                appearance,
+                "Command Palette".into(),
+                keybinding_name_to_display_string("workspace:toggle_command_palette", ctx),
+            ))
+            .build()
+            .on_click(|ctx, _, _| {
+                ctx.dispatch_typed_action(WorkspaceAction::TogglePalette {
+                    mode: PaletteMode::Command,
+                    source: PaletteSource::TitleBarSearchBar,
+                })
+            })
+            .finish();
+        row.add_child(
+            Container::new(palette)
+                .with_margin_left(TAB_BAR_ICON_PADDING)
+                .finish(),
+        );
+        row.finish()
     }
 
     fn compute_tab_bar_left_padding(&self, ctx: &AppContext) -> f32 {

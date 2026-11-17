@@ -54,8 +54,13 @@ jobs:
       - name: macOS build dependencies
         if: runner.os == 'macOS'
         run: |
-          brew install protobuf llvm pkg-config brotli
-          echo "LIBCLANG_PATH=$(brew --prefix llvm)/lib" >> "$GITHUB_ENV"
+          brew install protobuf pkg-config brotli
+          # Bindgen and its builtin headers must come from the same Xcode toolchain.
+          clang_path="$(xcrun --find clang)"
+          clang_lib="$(dirname "$clang_path")/../lib"
+          test -f "$clang_lib/libclang.dylib"
+          echo "CLANG_PATH=$clang_path" >> "$GITHUB_ENV"
+          echo "LIBCLANG_PATH=$clang_lib" >> "$GITHUB_ENV"
           echo "MACOSX_DEPLOYMENT_TARGET=11.0" >> "$GITHUB_ENV"
       - name: Install Rust
         shell: bash

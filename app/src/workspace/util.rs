@@ -23,6 +23,14 @@ pub struct PaneViewLocator {
 
 #[derive(Default)]
 pub(super) struct WorkspaceMouseStates {
+    #[cfg(feature = "warpeer")]
+    pub(super) quick_new_window: MouseStateHandle,
+    #[cfg(feature = "warpeer")]
+    pub(super) quick_new_tab: MouseStateHandle,
+    #[cfg(feature = "warpeer")]
+    pub(super) quick_new_file: MouseStateHandle,
+    #[cfg(feature = "warpeer")]
+    pub(super) quick_command_palette: MouseStateHandle,
     pub(super) new_tab_button: MouseStateHandle,
     pub(super) new_tab_menu: MouseStateHandle,
     pub(super) new_tab: MouseStateHandle,
