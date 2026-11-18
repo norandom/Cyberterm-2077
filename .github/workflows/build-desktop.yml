@@ -9,84 +9,96 @@ permissions:
   contents: read
 concurrency:
   group: desktop-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v') }}
 jobs:
-  build:
+  checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dagger/dagger-for-github@27b130bf0f79a7f6fbbbe0fbca6760dc9bb40a77 # v8.4.1
+        with:
+          version: '0.21.12'
+          verb: call
+          args: checks --source=.
+
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dagger/dagger-for-github@27b130bf0f79a7f6fbbbe0fbca6760dc9bb40a77 # v8.4.1
+        with:
+          version: '0.21.12'
+          verb: call
+          args: linux --source=. --tag=${{ github.ref_name }} --public-key=${{ vars.WARPEER_UPDATE_PUBLIC_KEY }} export --path=./build/artifacts
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: warpeer-linux-x86_64
+          path: build/artifacts/*
+          if-no-files-found: error
+          retention-days: 14
+
+  native:
     name: ${{ matrix.platform }} ${{ matrix.arch }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-24.04
-            platform: linux
-            arch: x86_64
-            host: x86_64-unknown-linux-gnu
           - os: windows-2022
             platform: windows
             arch: x86_64
-            host: x86_64-pc-windows-msvc
           - os: macos-15
             platform: macos
             arch: aarch64
-            host: aarch64-apple-darwin
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180
     env:
-      CARGO_BUILD_JOBS: ${{ matrix.platform == 'macos' && '1' || '2' }}
-      CARGO_FULL_PROFILE: release-desktop
-      CARGO_BIN_NAME: warpeer
-      WARP_APP_NAME: Warpeer
       GIT_RELEASE_TAG: ${{ github.ref_name }}
+      WARPEER_UPDATE_PUBLIC_KEY: ${{ vars.WARPEER_UPDATE_PUBLIC_KEY }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Linux build dependencies
-        if: runner.os == 'Linux'
-        run: |
-          echo "LIBCLANG_PATH=/usr/lib/llvm-18/lib" >> "$GITHUB_ENV"
-          sudo apt-get update
-          sudo apt-get install -y build-essential cmake pkg-config protobuf-compiler libssl-dev libfreetype-dev libexpat1-dev libgit2-dev libfontconfig1-dev libasound2-dev libclang-18-dev libxkbcommon-dev libwayland-dev libxcb1-dev libx11-dev libxi-dev libxcursor-dev
-      - name: Windows build dependencies
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          choco install protoc --yes --no-progress
-          "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
-      - name: macOS build dependencies
-        if: runner.os == 'macOS'
-        run: |
-          brew install protobuf pkg-config brotli
-          # Bindgen and its builtin headers must come from the same Xcode toolchain.
-          clang_path="$(xcrun --find clang)"
-          clang_lib="$(dirname "$clang_path")/../lib"
-          test -f "$clang_lib/libclang.dylib"
-          echo "CLANG_PATH=$clang_path" >> "$GITHUB_ENV"
-          echo "LIBCLANG_PATH=$clang_lib" >> "$GITHUB_ENV"
-          sdk_path="$(xcrun --sdk macosx --show-sdk-path)"
-          echo "SDKROOT=$sdk_path" >> "$GITHUB_ENV"
-          echo "BINDGEN_EXTRA_CLANG_ARGS=-isysroot $sdk_path" >> "$GITHUB_ENV"
-          test -f "$sdk_path/usr/include/simd/simd.h"
-          echo "MACOSX_DEPLOYMENT_TARGET=11.0" >> "$GITHUB_ENV"
-      - name: Install Rust
-        shell: bash
-        run: |
-          rustup show active-toolchain
-          rustc --version
-          test "$(rustc -vV | sed -n 's/host: //p')" = '${{ matrix.host }}'
-      - name: Test local runbook discovery
-        shell: bash
-        run: |
-          mkdir -p target
-          rustc --edition=2024 --test app/src/local_runbooks/catalog.rs -o target/runbook-tests
-          ./target/runbook-tests
-      - name: Build Warpeer
-        shell: bash
-        run: cargo build --locked -p warp --bin warpeer --no-default-features --features warpeer --profile release-desktop
-      - name: Package archive and checksum
-        shell: bash
-        run: python3 script/warpeer/package-desktop.py ${{ matrix.platform }}
+      # Native Apple SDK / hdiutil and MSVC cannot run in Dagger's Linux containers.
+      - name: Native build, tests, and installer
+        run: python3 script/warpeer/ci-native.py ${{ matrix.platform }} --install-deps --smoke-installers
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: warpeer-${{ matrix.platform }}-${{ matrix.arch }}
           path: dist/*
           if-no-files-found: error
           retention-days: 14
+
+  release:
+    needs: [checks, linux, native]
+    if: github.repository == 'norandom/warpeer' && startsWith(github.ref, 'refs/tags/v') && github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: write
+    concurrency:
+      group: warpeer-release-publication
+      cancel-in-progress: false
+    env:
+      GIT_RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: warpeer-*
+          path: build/unsigned
+          merge-multiple: true
+      - name: Sign and verify release through Dagger
+        uses: dagger/dagger-for-github@27b130bf0f79a7f6fbbbe0fbca6760dc9bb40a77 # v8.4.1
+        env:
+          WARPEER_RELEASE_SIGNING_KEY: ${{ secrets.WARPEER_RELEASE_SIGNING_KEY }}
+        with:
+          version: '0.21.12'
+          verb: call
+          args: sign --source=. --artifacts=build/unsigned --tag=${{ github.ref_name }} --public-key=${{ vars.WARPEER_UPDATE_PUBLIC_KEY }} --signing-key=env:WARPEER_RELEASE_SIGNING_KEY export --path=build/signed
+      - name: Publish signed release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GIT_RELEASE_TAG" build/signed/* --verify-tag --draft --title "Warpeer $GIT_RELEASE_TAG" --generate-notes
+          gh release edit "$GIT_RELEASE_TAG" --draft=false --latest

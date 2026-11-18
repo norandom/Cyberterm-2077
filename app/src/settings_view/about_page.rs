@@ -1,3 +1,5 @@
+#[cfg(all(feature = "warpeer", not(feature = "hosted_autoupdate")))]
+use crate::autoupdate::{self, AutoupdateStage, AutoupdateState};
 use warpui::assets::asset_cache::AssetSource;
 use warpui::elements::{
     Align, CacheOption, ConstrainedBox, Container, CrossAxisAlignment, Element, Flex, Image,
@@ -5,6 +7,8 @@ use warpui::elements::{
 };
 use warpui::ui_components::components::UiComponent;
 use warpui::{AppContext, Entity, TypedActionView, View, ViewContext, ViewHandle};
+#[cfg(all(feature = "warpeer", not(feature = "hosted_autoupdate")))]
+use warpui::{SingletonEntity, ui_components::button::ButtonVariant};
 
 use super::SettingsSection;
 use super::settings_page::{
@@ -23,6 +27,8 @@ pub struct AboutPageView {
 
 impl AboutPageView {
     pub fn new(_ctx: &mut ViewContext<AboutPageView>) -> Self {
+        #[cfg(all(feature = "warpeer", not(feature = "hosted_autoupdate")))]
+        _ctx.observe(&AutoupdateState::handle(_ctx), |_, _, ctx| ctx.notify());
         AboutPageView {
             page: PageType::new_monolith(AboutPageWidget::default(), None, false),
         }
@@ -49,13 +55,15 @@ impl View for AboutPageView {
 #[derive(Default)]
 struct AboutPageWidget {
     copy_version_button_mouse_state: MouseStateHandle,
+    #[cfg(all(feature = "warpeer", not(feature = "hosted_autoupdate")))]
+    update_button_mouse_state: MouseStateHandle,
 }
 
 impl SettingsWidget for AboutPageWidget {
     type View = AboutPageView;
 
     fn search_terms(&self) -> &str {
-        "about warpeer warp version"
+        "about warpeer warp version update restart"
     }
 
     fn render(
@@ -138,25 +146,89 @@ impl SettingsWidget for AboutPageWidget {
                     .finish(),
             ]);
 
-        Align::new(
-            Flex::column()
-                .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                .with_child(brand)
-                .with_child(version_row.finish())
-                .with_child(
-                    ui_builder
-                        .span(if product_profile::is_terminal_only() {
-                            "Copyright 2026 Warpeer contributors"
+        let mut contents = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_child(brand)
+            .with_child(version_row.finish())
+            .with_child(
+                ui_builder
+                    .span(if product_profile::is_terminal_only() {
+                        "Copyright 2026 Warpeer contributors"
+                    } else {
+                        "Copyright 2026 Warp"
+                    })
+                    .build()
+                    .with_margin_top(16.)
+                    .finish(),
+            );
+        #[cfg(all(feature = "warpeer", not(feature = "hosted_autoupdate")))]
+        {
+            let (status, button, action) = match autoupdate::get_update_state(_app) {
+                AutoupdateStage::NoUpdateAvailable => (
+                    autoupdate::update_error(_app)
+                        .unwrap_or(if autoupdate::has_checked(_app) {
+                            "You're up to date"
                         } else {
-                            "Copyright 2026 Warp"
+                            "Check for a newer stable release"
                         })
+                        .to_owned(),
+                    Some("Check for updates"),
+                    WorkspaceAction::CheckForUpdate,
+                ),
+                AutoupdateStage::CheckingForUpdate => (
+                    "Checking for updates…".into(),
+                    None,
+                    WorkspaceAction::CheckForUpdate,
+                ),
+                AutoupdateStage::DownloadingUpdate | AutoupdateStage::Updating { .. } => (
+                    "Downloading and verifying update…".into(),
+                    None,
+                    WorkspaceAction::CheckForUpdate,
+                ),
+                AutoupdateStage::UpdateReady { new_version, .. } => (
+                    format!("{} is available", new_version.version),
+                    Some("Update and restart"),
+                    WorkspaceAction::ApplyUpdate,
+                ),
+                AutoupdateStage::UpdatedPendingRestart { .. } => (
+                    "Update installed".into(),
+                    Some("Restart Warpeer"),
+                    WorkspaceAction::ApplyUpdate,
+                ),
+                AutoupdateStage::UnableToUpdateToNewVersion { .. }
+                | AutoupdateStage::UnableToLaunchNewVersion { .. } => (
+                    autoupdate::update_error(_app)
+                        .unwrap_or("Install the newer package with your package manager")
+                        .to_owned(),
+                    Some("Download update"),
+                    WorkspaceAction::DownloadNewVersion,
+                ),
+            };
+            contents = contents.with_child(
+                ui_builder
+                    .span(status)
+                    .with_soft_wrap()
+                    .build()
+                    .with_margin_top(16.)
+                    .finish(),
+            );
+            if let Some(label) = button {
+                contents = contents.with_child(
+                    ui_builder
+                        .button(
+                            ButtonVariant::Secondary,
+                            self.update_button_mouse_state.clone(),
+                        )
+                        .with_text_label(label.into())
                         .build()
-                        .with_margin_top(16.)
+                        .on_click(move |ctx, _, _| {
+                            ctx.dispatch_typed_action(action.clone());
+                        })
                         .finish(),
-                )
-                .finish(),
-        )
-        .finish()
+                );
+            }
+        }
+        Align::new(contents.finish()).finish()
     }
 }
 

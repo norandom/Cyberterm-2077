@@ -2071,7 +2071,7 @@ impl RootView {
     /// (i.e. onboarding has completed or was not shown). Safe to call unconditionally — it is
     /// a no-op when still in a pre-terminal state.
     fn start_autoupdate_polling(&self, ctx: &mut ViewContext<Self>) {
-        if product_profile::is_terminal_only() {
+        if product_profile::is_terminal_only() && !cfg!(feature = "warpeer") {
             return;
         }
 

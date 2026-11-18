@@ -10,8 +10,11 @@ mod app_state;
 mod auth;
 #[cfg(feature = "hosted_autoupdate")]
 mod autoupdate;
-#[cfg(not(feature = "hosted_autoupdate"))]
+#[cfg(all(not(feature = "hosted_autoupdate"), not(feature = "warpeer")))]
 #[path = "autoupdate_disabled.rs"]
+mod autoupdate;
+#[cfg(all(not(feature = "hosted_autoupdate"), feature = "warpeer"))]
+#[path = "autoupdate_warpeer.rs"]
 mod autoupdate;
 mod banner;
 mod billing;

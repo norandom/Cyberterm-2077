@@ -54,6 +54,7 @@ required-features = ["preview_channel"]
 test = false
 
 [dependencies]
+warpeer_update = { path = "../crates/warpeer_update", optional = true }
 addr = "0.15.6"
 ai.workspace = true
 ai_types.workspace = true
@@ -824,6 +825,7 @@ hosted_uploads = ["dep:crc"]
 warpeer_assets = ["warp_assets/warpeer"]
 terminal_visuals = ["warpui/terminal_visuals", "warpui_core/terminal_visuals"]
 warpeer = [
+    "dep:warpeer_update",
     "dep:block2",
     "warp_core/terminal_only",
     "warpui/no_telemetry",

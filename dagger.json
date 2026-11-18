@@ -1,0 +1,8 @@
+{
+  "name": "warpeer-ci",
+  "engineVersion": "v0.21.12",
+  "sdk": {
+    "source": "python"
+  },
+  "source": ".dagger"
+}

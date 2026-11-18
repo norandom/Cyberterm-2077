@@ -1285,7 +1285,7 @@ pub fn init(app: &mut AppContext) {
         .with_custom_action(CustomAction::SearchDrive),
     ]);
 
-    if FeatureFlag::Autoupdate.is_enabled() {
+    if FeatureFlag::Autoupdate.is_enabled() || cfg!(feature = "warpeer") {
         app.register_editable_bindings([
             EditableBinding::new(
                 "workspace:update_and_relaunch",
