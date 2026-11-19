@@ -4,6 +4,8 @@ Warpeer is a terminal-only desktop build derived from the open-source
 [Warp](https://github.com/warpdotdev/warp) client. It keeps Warp's fast GPU-rendered terminal
 and removes accounts, cloud sync, hosted AI, and other hosted-service features.
 
+![Warpeer with a local Markdown runbook open next to a terminal; its shell block was sent to the terminal input with "Run in terminal"](docs/images/warpeer-runbook.png)
+
 ## What this is (and isn't)
 
 This is my personal fork of the open-source Warp client. It is a pet project only: no
@@ -20,7 +22,7 @@ myself.
 - Bundled Ghostty color themes and configurable terminal motion effects
 - Tab privacy with biometric unlock and pane previews
 - Worktree agent control center for local CLI agents
-- Toolbar shortcuts for New Window, New Tab, New File and the command palette (CP)
+- Toolbar shortcuts for New Window, New Tab, New File, New Runbook and the command palette (CP)
 
 Warpeer never sends telemetry or crash reports, never auto-updates, never runs a local HTTP
 server, and never requires sign-in. It stores its data in its own `.warpeer` and application
@@ -42,9 +44,66 @@ need a graphical session, fontconfig, ALSA, X11/Wayland and a working GPU driver
 
 ## Local runbooks
 
-Use **Add local runbook folder** and **Browse local runbooks** in the command
-palette to open Markdown documents from your own folders. Shell blocks have an
-explicit Run action. There is no account or synchronization requirement.
+Runbooks are plain Markdown files in folders you choose. Fenced shell blocks
+get a **Run in terminal** button (or select the block and press Ctrl+Enter). It
+puts the command into the active terminal's input; press Enter to execute it.
+Opening a runbook never runs anything, and nothing needs an account or sync.
+
+- **New Runbook** (notebook icon in the toolbar, or the command palette) creates
+  `untitled-runbook.md` in your first runbook folder and opens it in the
+  notebook viewer. If no folder is set yet, Warpeer asks for one first.
+- **Add local runbook folder** registers more folders.
+- **Browse local runbooks** searches every registered folder, subfolders included.
+
+**New File** opens a plain editor, not a runbook. A file you write there only
+gets Run buttons once you save it as `.md` and open it through Browse local
+runbooks.
+
+### Organizing runbooks
+
+Keep one folder per scope and register each of them:
+
+```text
+~/Runbooks/                 personal, cross-project
+  git/cleanup-branches.md
+  k8s/restart-deployment.md
+~/Source/myproject/runbooks/ checked in next to the code it operates
+  deploy.md
+  rollback.md
+```
+
+```toml
+[runbooks]
+folders = ["~/Runbooks", "~/Source/myproject/runbooks"]
+```
+
+- New runbooks go into the **first** folder in the list, so put your default
+  folder first. Rename `untitled-runbook.md` afterwards, for example with `mv`.
+- Browse searches full paths, so subfolder names such as `k8s/` or `deploy/`
+  work as tags: typing `k8s` lists everything under `k8s/`.
+- Write one task per file. Start with a `#` title, explain prerequisites in
+  prose, and put each step in its own fenced block:
+
+  ````markdown
+  # Restart a deployment
+
+  Make sure your kube context points at the right cluster.
+
+  ```sh
+  kubectl config current-context
+  ```
+
+  ```sh
+  kubectl rollout restart deployment/web
+  ```
+  ````
+
+- Only fenced blocks run. Use `sh`, `bash` or a similar shell tag; a bare
+  command in a paragraph is plain text.
+- Use project folders for runbooks that belong in Git review, and register
+  documentation subfolders rather than whole repositories, since scans are
+  bounded.
+
 See [local runbooks](docs/local-runbooks.md) for configuration and scan limits.
 
 ## Font configuration

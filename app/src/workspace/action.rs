@@ -129,6 +129,8 @@ pub enum AutoCloudHandoffTrigger {
 pub enum WorkspaceAction {
     #[cfg(all(feature = "warpeer", feature = "local_fs"))]
     AddLocalRunbookFolder,
+    #[cfg(all(feature = "warpeer", feature = "local_fs"))]
+    NewLocalRunbook,
     ActivateTab(usize),
     ActivatePrevTab,
     ActivateNextTab,
@@ -1353,6 +1355,8 @@ impl WorkspaceAction {
             DismissWaylandCrashRecoveryBannerAndOpenLink => false,
             #[cfg(all(feature = "warpeer", feature = "local_fs"))]
             AddLocalRunbookFolder => false,
+            #[cfg(all(feature = "warpeer", feature = "local_fs"))]
+            NewLocalRunbook => false,
             #[cfg(target_family = "wasm")]
             OpenLinkOnDesktop(_) => false,
             // actions that are related to updating user settings or

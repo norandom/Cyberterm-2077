@@ -1,5 +1,10 @@
 # Local Markdown runbooks
 
+Click **New Runbook** in the toolbar (or run **New local runbook** from the
+command palette) to create a templated `untitled-runbook.md` in the first
+configured folder and open it in the notebook viewer. Existing files are never
+overwritten; further runbooks become `untitled-runbook-2.md` and so on.
+
 Open the command palette and choose **Add local runbook folder**. Choose a folder
 containing `.md` or `.markdown` documents, then choose **Browse local runbooks**.
 Repeat Add to include more folders. Subfolders are included and paths distinguish

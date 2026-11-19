@@ -29,6 +29,8 @@ pub(super) struct WorkspaceMouseStates {
     pub(super) quick_new_tab: MouseStateHandle,
     #[cfg(feature = "warpeer")]
     pub(super) quick_new_file: MouseStateHandle,
+    #[cfg(all(feature = "warpeer", feature = "local_fs"))]
+    pub(super) quick_new_runbook: MouseStateHandle,
     #[cfg(feature = "warpeer")]
     pub(super) quick_command_palette: MouseStateHandle,
     pub(super) new_tab_button: MouseStateHandle,

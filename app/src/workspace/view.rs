@@ -710,6 +710,8 @@ pub(crate) const TOGGLE_CONVERSATION_LIST_VIEW_BINDING_NAME: &str =
 pub(crate) const NEW_TAB_BINDING_NAME: &str = "workspace:new_tab";
 pub(crate) const NEW_TERMINAL_TAB_BINDING_NAME: &str = "workspace:new_terminal_tab";
 pub(crate) const NEW_FILE_BINDING_NAME: &str = "workspace:new_file";
+#[cfg(all(feature = "warpeer", feature = "local_fs"))]
+pub(crate) const NEW_RUNBOOK_BINDING_NAME: &str = "workspace:new_local_runbook";
 pub(crate) const NEW_WINDOW_BINDING_NAME: &str = "workspace:new_window";
 pub(crate) const NEW_AGENT_TAB_BINDING_NAME: &str = "workspace:new_agent_tab";
 pub(crate) const NEW_AMBIENT_AGENT_TAB_BINDING_NAME: &str = "workspace:new_ambient_agent_tab";
@@ -21917,6 +21919,71 @@ impl Workspace {
         }
     }
 
+    /// Creates a templated Markdown runbook in the first configured runbook folder
+    /// and opens it in the notebook viewer. With no folder configured, asks for one
+    /// first and remembers it, like "Add local runbook folder".
+    #[cfg(all(feature = "warpeer", feature = "local_fs"))]
+    fn new_local_runbook(&mut self, ctx: &mut ViewContext<Self>) {
+        if let Some(folder) = crate::local_runbooks::configured_folders(ctx)
+            .into_iter()
+            .find(|folder| folder.is_dir())
+        {
+            self.create_and_open_runbook(&folder, ctx);
+            return;
+        }
+        let workspace = ctx.handle();
+        ctx.open_file_picker(
+            move |result, ctx| {
+                let Ok(paths) = result else { return };
+                let Some(path) = paths.into_iter().next() else {
+                    return;
+                };
+                let folder: PathBuf = path.into();
+                crate::local_runbooks::LocalRunbookSettings::handle(ctx).update(
+                    ctx,
+                    |settings, ctx| {
+                        let mut folders = settings.folders.value().clone();
+                        let entry = folder.to_string_lossy().into_owned();
+                        if !folders.contains(&entry) {
+                            folders.push(entry);
+                            report_if_error!(settings.folders.set_value(folders, ctx));
+                        }
+                    },
+                );
+                if let Some(workspace) = workspace.upgrade(ctx) {
+                    workspace.update(ctx, |workspace, ctx| {
+                        workspace.create_and_open_runbook(&folder, ctx);
+                    });
+                }
+            },
+            FilePickerConfiguration::new().folders_only(),
+        );
+    }
+
+    #[cfg(all(feature = "warpeer", feature = "local_fs"))]
+    fn create_and_open_runbook(&mut self, folder: &Path, ctx: &mut ViewContext<Self>) {
+        match crate::local_runbooks::create_runbook(folder) {
+            Ok(path) => self.open_file_with_target(
+                path.clone(),
+                FileTarget::MarkdownViewer(EditorLayout::NewTab),
+                None,
+                CodeSource::CommandPalette {
+                    location: LocalOrRemotePath::Local(path),
+                },
+                ctx,
+            ),
+            Err(e) => {
+                log::warn!("Failed to create runbook: {e:?}");
+                self.toast_stack.update(ctx, |toast_stack, ctx| {
+                    toast_stack.add_ephemeral_toast(
+                        DismissibleToast::error(format!("Failed to create runbook: {e}")),
+                        ctx,
+                    );
+                });
+            }
+        }
+    }
+
     /// Always-visible local creation actions, immediately before the right-side controls.
     #[cfg(feature = "warpeer")]
     fn render_quick_creation_buttons(
@@ -21968,6 +22035,24 @@ impl Workspace {
                 .finish(),
             );
         }
+        #[cfg(feature = "local_fs")]
+        row.add_child(
+            Container::new(
+                self.render_tab_bar_icon_button(
+                    appearance,
+                    icons::Icon::Notebook,
+                    &self.mouse_states.quick_new_runbook,
+                    WorkspaceAction::NewLocalRunbook,
+                    "New Runbook".into(),
+                    keybinding_name_to_display_string(NEW_RUNBOOK_BINDING_NAME, ctx),
+                    false,
+                    false,
+                )
+                .finish(),
+            )
+            .with_margin_left(TAB_BAR_ICON_PADDING)
+            .finish(),
+        );
         let theme = appearance.theme();
         let palette = appearance
             .ui_builder()
@@ -25120,6 +25205,8 @@ impl TypedActionView for Workspace {
                     FilePickerConfiguration::new().folders_only(),
                 );
             }
+            #[cfg(all(feature = "warpeer", feature = "local_fs"))]
+            NewLocalRunbook => self.new_local_runbook(ctx),
             OpenPalette {
                 mode,
                 source,

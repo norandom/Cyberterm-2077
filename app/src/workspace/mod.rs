@@ -63,6 +63,8 @@ pub use one_time_modal_model::OneTimeModalModel;
 pub use registry::WorkspaceRegistry;
 pub use toast_stack::{ToastStack, ToastStackEvent};
 
+#[cfg(all(feature = "warpeer", feature = "local_fs"))]
+use crate::workspace::view::NEW_RUNBOOK_BINDING_NAME;
 use crate::workspace::view::{
     LEFT_PANEL_AGENT_CONVERSATIONS_BINDING_NAME, LEFT_PANEL_GLOBAL_SEARCH_BINDING_NAME,
     LEFT_PANEL_PROJECT_EXPLORER_BINDING_NAME, LEFT_PANEL_WARP_DRIVE_BINDING_NAME,
@@ -130,6 +132,12 @@ pub fn init(app: &mut AppContext) {
             "workspace:add_local_runbook_folder",
             "Add local runbook folder",
             WorkspaceAction::AddLocalRunbookFolder,
+        )
+        .with_context_predicate(id!("Workspace")),
+        EditableBinding::new(
+            NEW_RUNBOOK_BINDING_NAME,
+            "New local runbook",
+            WorkspaceAction::NewLocalRunbook,
         )
         .with_context_predicate(id!("Workspace")),
         EditableBinding::new(
