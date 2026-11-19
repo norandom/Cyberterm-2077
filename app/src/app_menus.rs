@@ -143,7 +143,7 @@ fn updateable_custom_item_without_checkmark(action: CustomAction, ctx: &AppConte
 fn make_new_app_menu(ctx: &AppContext) -> Menu {
     let mut menu_items = if product_profile::is_terminal_only() {
         vec![MenuItem::Custom(CustomMenuItem::new(
-            "About Warpeer",
+            "About Cyberterm 2077",
             custom_action_dispatcher(CustomAction::ShowAboutWarp),
             no_updates,
             None,
@@ -228,7 +228,7 @@ fn make_new_app_menu(ctx: &AppContext) -> Menu {
     menu_items.push(MenuItem::Separator);
     menu_items.push(MenuItem::Custom(CustomMenuItem::new(
         if product_profile::is_terminal_only() {
-            "Set Warpeer as Default Terminal"
+            "Set Cyberterm 2077 as Default Terminal"
         } else {
             "Set Warp as Default Terminal"
         },

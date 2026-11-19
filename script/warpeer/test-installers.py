@@ -19,8 +19,8 @@ class InstallerTests(unittest.TestCase):
             root = Path(tmp)
             source = root / "portable"
             source.mkdir()
-            shutil.copy2("/bin/true", source / "warpeer")
-            package = root / "warpeer.deb"
+            shutil.copy2("/bin/true", source / "cyberterm2077")
+            package = root / "cyberterm2077.deb"
             deb.package(source, "v1.2.3", package)
             version = subprocess.check_output(["dpkg-deb", "-f", str(package), "Version"], text=True).strip()
             self.assertEqual(version, "1.2.3")
@@ -30,17 +30,18 @@ class InstallerTests(unittest.TestCase):
             self.assertIn("libxkbcommon-x11-0", dependencies)
             unpack = root / "unpacked"
             subprocess.run(["dpkg-deb", "-x", str(package), str(unpack)], check=True)
-            self.assertEqual((unpack / "usr/lib/warpeer/.package-managed").read_text(), "dpkg\n")
-            self.assertTrue((unpack / "usr/bin/warpeer").resolve().is_file())
-            self.assertTrue((unpack / "usr/share/applications/warpeer.desktop").is_file())
+            self.assertEqual((unpack / "usr/lib/cyberterm2077/.package-managed").read_text(), "dpkg\n")
+            self.assertTrue((unpack / "usr/bin/cyberterm2077").resolve().is_file())
+            self.assertTrue((unpack / "usr/share/applications/cyberterm2077.desktop").is_file())
+            self.assertTrue((unpack / "usr/share/icons/hicolor/512x512/apps/cyberterm2077.png").is_file())
 
     @unittest.skipUnless(shutil.which("makensis"), "NSIS required")
     def test_windows_installer_compiles(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / "warpeer.exe").write_bytes(b"placeholder")
+            (root / "cyberterm2077.exe").write_bytes(b"placeholder")
             (root / "LICENSE-AGPL").write_text("test license")
-            output = root / "warpeer-windows-x86_64-setup.exe"
+            output = root / "cyberterm2077-windows-x86_64-setup.exe"
             result = subprocess.run(["makensis", "-V2", "-DVERSION=v1.2.3", f"-DSOURCE={root}",
                             f"-DOUTPUT={output}", str(HERE / "installer.nsi")], check=True, capture_output=True, text=True)
             self.assertNotIn("warning 6000", result.stdout + result.stderr)

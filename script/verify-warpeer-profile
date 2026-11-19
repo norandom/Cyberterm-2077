@@ -421,7 +421,7 @@ do
 done
 
 ./script/format --check
-cargo check -p warp --bin warpeer --no-default-features --features warpeer
+cargo check -p warp --bin cyberterm2077 --no-default-features --features warpeer
 cargo check -p warp --bin warp --features gui
 cargo check -p warp_completer --no-default-features
 cargo check -p warp_completer --features embedded-signatures

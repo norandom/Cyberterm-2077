@@ -1,6 +1,8 @@
 //! Authenticate the DMG before allowing hdiutil to parse or mount it.
+use std::fs;
+use std::process::Command;
+
 use super::*;
-use std::{fs, process::Command};
 
 struct Mount(PathBuf);
 impl Drop for Mount {
@@ -15,13 +17,13 @@ impl Drop for Mount {
 pub(super) fn install(tag: &str, root: &Path, key: [u8; 32]) -> Result<()> {
     ensure!(
         !root.starts_with("/Volumes") && !root.to_string_lossy().contains("AppTranslocation"),
-        "Move Warpeer.app to Applications and launch it from there before updating"
+        "Move Cyberterm 2077.app to Applications and launch it from there before updating"
     );
     let downloads = tempfile::tempdir()?;
-    let name = "warpeer-macos-aarch64.dmg";
+    let name = "cyberterm2077-macos-aarch64.dmg";
     let dmg = downloads.path().join(name);
     let signature = downloads.path().join(format!("{name}.sig"));
-    let base = format!("https://github.com/norandom/warpeer/releases/download/{tag}");
+    let base = format!("{RELEASES_URL}/download/{tag}");
     for path in [&dmg, &signature] {
         let filename = path.file_name().unwrap().to_str().unwrap();
         self_update::Download::from_url(&format!("{base}/{filename}"))
@@ -43,12 +45,12 @@ pub(super) fn install(tag: &str, root: &Path, key: [u8; 32]) -> Result<()> {
     let _mount = Mount(mountpoint.clone());
     let parent = root.parent().context("App bundle has no parent")?;
     let staging = tempfile::Builder::new()
-        .prefix(".warpeer-update-")
+        .prefix(".cyberterm2077-update-")
         .tempdir_in(parent)?;
-    let new_app = staging.path().join("Warpeer.app");
+    let new_app = staging.path().join(APP_BUNDLE);
     ensure!(
         Command::new("/usr/bin/ditto")
-            .arg(mountpoint.join("Warpeer.app"))
+            .arg(mountpoint.join(APP_BUNDLE))
             .arg(&new_app)
             .status()?
             .success(),

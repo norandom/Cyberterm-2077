@@ -37,10 +37,10 @@ class ReleaseTests(unittest.TestCase):
         for name in signer.ARCHIVES:
             if name.endswith(".zip"):
                 with zipfile.ZipFile(self.dist / name, "w") as archive:
-                    archive.writestr("warpeer.exe", b"test payload")
+                    archive.writestr("cyberterm2077.exe", b"test payload")
             else:
                 with tarfile.open(self.dist / name, "w:gz") as archive:
-                    entry = tarfile.TarInfo("warpeer")
+                    entry = tarfile.TarInfo("cyberterm2077")
                     entry.size = 12
                     archive.addfile(entry, io.BytesIO(b"test payload"))
         for name in signer.DETACHED:
@@ -52,7 +52,7 @@ class ReleaseTests(unittest.TestCase):
             if not path.name.endswith(".sha256"):
                 digest = hashlib.sha256(path.read_bytes()).hexdigest()
                 self.assertEqual((self.dist / (path.name + ".sha256")).read_text(), f"{digest}  {path.name}\n")
-        dmg = self.dist / "warpeer-macos-aarch64.dmg"
+        dmg = self.dist / "cyberterm2077-macos-aarch64.dmg"
         dmg.write_bytes(b"tampered")
         result = subprocess.run(["zipsign", "verify", "separate", str(dmg), str(dmg) + ".sig", str(self.public)], capture_output=True)
         self.assertNotEqual(result.returncode, 0)

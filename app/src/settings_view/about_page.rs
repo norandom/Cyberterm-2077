@@ -94,7 +94,7 @@ impl SettingsWidget for AboutPageWidget {
                 )
                 .with_child(
                     ui_builder
-                        .span("Warpeer")
+                        .span("Cyberterm 2077")
                         .build()
                         .with_margin_top(8.)
                         .finish(),
@@ -153,7 +153,7 @@ impl SettingsWidget for AboutPageWidget {
             .with_child(
                 ui_builder
                     .span(if product_profile::is_terminal_only() {
-                        "Copyright 2026 Warpeer contributors"
+                        "Copyright 2026 Cyberterm 2077 contributors"
                     } else {
                         "Copyright 2026 Warp"
                     })
@@ -192,7 +192,7 @@ impl SettingsWidget for AboutPageWidget {
                 ),
                 AutoupdateStage::UpdatedPendingRestart { .. } => (
                     "Update installed".into(),
-                    Some("Restart Warpeer"),
+                    Some("Restart Cyberterm 2077"),
                     WorkspaceAction::ApplyUpdate,
                 ),
                 AutoupdateStage::UnableToUpdateToNewVersion { .. }

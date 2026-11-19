@@ -1,12 +1,12 @@
-Warpeer
+Cyberterm 2077 (formerly Warpeer)
 Copyright (C) 2026 matrixme
 
 This program is a modified version of Warp (https://github.com/warpdotdev/warp),
 Copyright (C) 2020-2026 Denver Technologies, Inc.
 
-Warpeer is based on Warp upstream commit 17f4ec80ffa80749be035b2c2405e0f180a60e2e.
+Cyberterm 2077 is based on Warp upstream commit 17f4ec80ffa80749be035b2c2405e0f180a60e2e.
 The modifications turn Warp into a terminal-only product: account, cloud, hosted AI,
-telemetry, and auto-update features are removed or disabled, and Warpeer-specific
+telemetry, and auto-update features are removed or disabled, and fork-specific
 terminal, pane, theme, and privacy features are added.
 
 This fork additionally integrates Warp upstream through commit

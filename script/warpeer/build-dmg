@@ -4,7 +4,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 output_dir="$repo_root/build/warpeer"
-final_dmg="$output_dir/Warpeer.dmg"
+final_dmg="$output_dir/Cyberterm2077.dmg"
 distribution=false
 clean_build="${WARPEER_CLEAN_BUILD:-0}"
 max_dmg_bytes="${WARPEER_MAX_DMG_BYTES:-52428800}"
@@ -232,7 +232,7 @@ rm -rf -- "$built_app_path"
   cargo bundle \
     --format osx \
     --profile "$profile" \
-    --bin warpeer \
+    --bin cyberterm2077 \
     --no-default-features \
     --features warpeer
 )

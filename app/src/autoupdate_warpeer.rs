@@ -162,7 +162,7 @@ impl AutoupdateState {
             if let Err(err) = &result {
                 me.last_error = Some(format!("{err:#}"));
                 me.stage = AutoupdateStage::NoUpdateAvailable;
-                log::warn!("Warpeer update check failed: {err:#}");
+                log::warn!("Cyberterm 2077 update check failed: {err:#}");
             }
             ctx.emit(AutoupdateStateEvent::CheckComplete {
                 result: Box::new(result),
@@ -223,7 +223,7 @@ impl AutoupdateState {
                         me.stage = AutoupdateStage::UpdatedPendingRestart { new_version };
                     }
                     Err(err) => {
-                        log::error!("Warpeer update failed: {err:#}");
+                        log::error!("Cyberterm 2077 update failed: {err:#}");
                         me.last_error = Some(format!("{err:#}"));
                         me.stage = AutoupdateStage::UnableToUpdateToNewVersion { new_version };
                     }
@@ -384,7 +384,7 @@ pub fn spawn_child_if_necessary(app: &mut AppContext) {
             return;
         }
         if let Err(err) = std::process::Command::new(exe).spawn() {
-            log::error!("Unable to relaunch Warpeer: {err}");
+            log::error!("Unable to relaunch Cyberterm 2077: {err}");
         }
     }
 }

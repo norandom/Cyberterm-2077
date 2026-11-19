@@ -708,6 +708,11 @@ lazy_static! {
         "bash",
         "fish",
         "zsh",
+        // PowerShell blocks are runnable too: Run inserts the command into the
+        // active terminal, whichever shell it runs.
+        "pwsh",
+        "powershell",
+        "ps1",
     ]);
 }
 
@@ -748,7 +753,6 @@ impl From<&CodeBlockText> for CodeBlockType {
                 "toml" => "TOML",
                 "swift" => "Swift",
                 "kotlin" => "Kotlin",
-                "powershell" => "PowerShell",
                 text => text,
             };
             CodeBlockType::Code {

@@ -1,142 +1,280 @@
-# Warpeer
+<img src="app/channels/cyberterm2077/icon/cyberterm2077.svg" alt="Cyberterm 2077 app icon: a neon >_ prompt on a dark tile" width="96">
 
-Warpeer is a terminal-only desktop build derived from the open-source
-[Warp](https://github.com/warpdotdev/warp) client. It keeps Warp's fast GPU-rendered terminal
-and removes accounts, cloud sync, hosted AI, and other hosted-service features.
+# Cyberterm 2077
 
-![Warpeer with a local Markdown runbook open next to a terminal; its shell block was sent to the terminal input with "Run in terminal"](docs/images/warpeer-runbook.png)
+Cyberterm 2077 is a desktop terminal that runs your Markdown runbooks. Write the
+steps of a deployment as a `.md` file, keep it in Git next to your Terraform,
+Ansible or PowerShell DSC code, and step through it in Bash, Zsh, Fish or
+PowerShell. Each step goes into your terminal's input line and runs when you
+press Enter. It doesn't talk to a cloud service.
 
-## What this is (and isn't)
+![A Markdown runbook rendered on the left and a terminal on the right. The runbook's shell block has been sent to the terminal input with "Run in terminal" and waits for Enter.](docs/images/runbook-and-terminal.png)
 
-This is my personal fork of the open-source Warp client. It is a pet project only: no
-warranty, no support, no roadmap. If you want to support the work behind the terminal, buy
-[Warp](https://www.warp.dev/terminal). I'm just an upstream consumer. I run systems where
-terminals can't have a subscription mode or nag screens, so I keep this local-only build for
-myself.
+## Status: personal fork, no warranty
 
-## Features
+This is my personal fork of the open-source [Warp](https://github.com/warpdotdev/warp)
+terminal, formerly called Warpeer. It comes with no warranty, no support and no
+roadmap. I build it because I run systems where a terminal can't have accounts,
+subscriptions or nag screens. If you want to support the people who built the
+terminal underneath, buy [Warp](https://www.warp.dev/terminal).
 
-- GPU-accelerated terminal rendering with IME support
-- Tabs, vertical tabs, split panes, and pane layout controls
-- Command history, completions, global search, and code review
-- Bundled Ghostty color themes and configurable terminal motion effects
-- Tab privacy with biometric unlock and pane previews
-- Worktree agent control center for local CLI agents
-- Toolbar shortcuts for New Window, New Tab, New File, New Runbook and the command palette (CP)
+It is not affiliated with Warp (Denver Technologies, Inc.) or with any game
+publisher.
 
-Warpeer never sends telemetry or crash reports, never auto-updates, never runs a local HTTP
-server, and never requires sign-in. It stores its data in its own `.warpeer` and application
-support directories, separate from Warp.
+## Why runbooks in a terminal
 
-## Desktop builds
+Most ops teams already write runbooks in Markdown: in a wiki, a README or a
+`docs/` folder. During an incident someone copies commands out of a browser tab,
+edits a hostname by hand and hopes the page is still current. Notebook tools that
+fix this usually want an account and a cloud workspace, which many environments
+don't allow.
 
-This fork tracks [Warp upstream](https://github.com/warpdotdev/warp) directly,
-while preserving Warpeer's terminal-only product profile. The current integration
-includes Warp through `0f81fad401df526e440083f95efa287a2e02f5b3` (2026-11-17).
+Cyberterm 2077 keeps the runbook as a plain file and makes it executable where
+you already work. The file diffs, reviews and merges like any other Markdown in
+the repo; there is no export format or database behind it.
 
-GitHub Actions builds for x86-64 Windows and Linux, and for Apple Silicon macOS.
-Download artifacts from a successful [Desktop builds run](https://github.com/norandom/warpeer/actions/workflows/build-desktop.yml).
-Each artifact includes a SHA-256 checksum. Extract the whole archive, then run
-`warpeer.exe` on Windows or `./warpeer` on Linux. On macOS, open the DMG and copy
-Warpeer to Applications. The macOS app is ad-hoc signed, not notarized; Windows
-builds are unsigned. Linux builds target Ubuntu 24.04 (glibc 2.39 or newer) and
-need a graphical session, fontconfig, ALSA, X11/Wayland and a working GPU driver.
+Clicking "Run in terminal" puts the command into the terminal input, where you
+can read it and fix the hostname before you press Enter. I wanted that pause.
+Opening or browsing a runbook never executes anything.
 
-## Local runbooks
+The command runs in the session you already have open, with your PATH,
+credentials and kube context, in Bash, Zsh, Fish or PowerShell. There is no
+sign-in, telemetry, crash reporting, hosted AI or sync. The one network request
+the app makes by itself is described under [Network use](#network-use).
 
-Runbooks are plain Markdown files in folders you choose. Fenced shell blocks
-get a **Run in terminal** button (or select the block and press Ctrl+Enter). It
-puts the command into the active terminal's input; press Enter to execute it.
-Opening a runbook never runs anything, and nothing needs an account or sync.
+## First runbook in five minutes
 
-- **New Runbook** (notebook icon in the toolbar, or the command palette) creates
-  `untitled-runbook.md` in your first runbook folder and opens it in the
-  notebook viewer. If no folder is set yet, Warpeer asks for one first.
-- **Add local runbook folder** registers more folders.
-- **Browse local runbooks** searches every registered folder, subfolders included.
+1. Install a build (see [Install](#install)) and start it.
+2. Click **New Runbook** (the notebook icon next to New File in the toolbar).
+   The first time, pick a folder for your runbooks, for example `~/Runbooks`.
+3. The new `untitled-runbook.md` opens in the notebook viewer. Click **Raw** to
+   edit it, and replace the example with a real step:
 
-**New File** opens a plain editor, not a runbook. A file you write there only
-gets Run buttons once you save it as `.md` and open it through Browse local
-runbooks.
+   ````markdown
+   # Plan the staging network
 
-### Organizing runbooks
+   Check that you are in the right workspace first.
 
-Keep one folder per scope and register each of them:
+   ```bash
+   terraform -chdir=infra/network workspace show
+   ```
+
+   ```bash
+   terraform -chdir=infra/network plan -out=staging.tfplan
+   ```
+   ````
+
+   ![The same runbook in the Raw view: a title, a short description and a fenced sh block.](docs/images/runbook-raw-editor.png)
+
+4. Switch back to **Rendered**. Each fenced block now has a **Run in terminal**
+   button. You can also select a block and press Ctrl+Enter, and move between
+   blocks with Ctrl+Up and Ctrl+Down.
+5. Click it, read the command in the terminal input and press Enter.
+
+Rename the file when you are done, for example
+`mv ~/Runbooks/untitled-runbook.md ~/Runbooks/staging-network-plan.md`.
+
+## Writing runbooks
+
+A block is runnable when its fence is tagged `sh`, `shell`, `bash`, `zsh`,
+`fish`, `pwsh`, `powershell` or `ps1`. Any other block (YAML, HCL, JSON) is shown
+with syntax highlighting but no Run button, which is useful for showing config
+next to the command that applies it. A command written in a normal paragraph is
+just text.
+
+The tag only decides whether a block gets the button. The command goes to
+whatever shell the active terminal runs, so a `powershell` block belongs in a
+runbook you step through from a PowerShell tab.
+
+Write `{{name}}` in a command to mark a value that changes between runs, such as
+an environment or a host. These placeholders become workflow arguments that you
+fill in before pressing Enter.
+
+Some habits that keep runbooks useful:
+
+- One task per file, with a `#` title that says what it does.
+- Prerequisites and checks in prose, before the first command.
+- One command per block, so each step can be read and run on its own.
+- A dry run first: `plan`, `--check`, `Test-`, then the real change.
+
+### Terraform
+
+````markdown
+# Apply the {{env}} network
+
+```bash
+terraform -chdir=infra/network workspace select {{env}}
+```
+
+```bash
+terraform -chdir=infra/network plan -out={{env}}.tfplan
+```
+
+Read the plan. Apply only that saved plan:
+
+```bash
+terraform -chdir=infra/network apply {{env}}.tfplan
+```
+````
+
+### Ansible
+
+````markdown
+# Patch the web tier
+
+```bash
+ansible-playbook -i inventories/{{env}} patch-web.yml --check --diff
+```
+
+If the diff looks right, run it for real, one host at a time:
+
+```bash
+ansible-playbook -i inventories/{{env}} patch-web.yml --forks 1
+```
+````
+
+### PowerShell Desired State Configuration
+
+````markdown
+# Converge the IIS baseline
+
+```powershell
+. .\WebBaseline.ps1; WebBaseline -OutputPath .\out\WebBaseline
+```
+
+```powershell
+Test-DscConfiguration -Path .\out\WebBaseline -Verbose
+```
+
+```powershell
+Start-DscConfiguration -Path .\out\WebBaseline -Wait -Verbose
+```
+````
+
+## Organizing runbooks
+
+Keep one folder per scope and register each one, either with **Add local
+runbook folder** in the command palette or in `settings.toml`:
 
 ```text
-~/Runbooks/                 personal, cross-project
+~/Runbooks/                        personal, cross-project
   git/cleanup-branches.md
   k8s/restart-deployment.md
-~/Source/myproject/runbooks/ checked in next to the code it operates
-  deploy.md
-  rollback.md
+~/Source/platform/runbooks/        reviewed in Git with the code it operates
+  network/apply.md
+  web/patch.md
 ```
 
 ```toml
 [runbooks]
-folders = ["~/Runbooks", "~/Source/myproject/runbooks"]
+folders = ["~/Runbooks", "~/Source/platform/runbooks"]
 ```
 
-- New runbooks go into the **first** folder in the list, so put your default
-  folder first. Rename `untitled-runbook.md` afterwards, for example with `mv`.
-- Browse searches full paths, so subfolder names such as `k8s/` or `deploy/`
-  work as tags: typing `k8s` lists everything under `k8s/`.
-- Write one task per file. Start with a `#` title, explain prerequisites in
-  prose, and put each step in its own fenced block:
+- **New Runbook** writes into the first folder in the list, so put your default
+  folder first. Existing files are never overwritten; the next new runbook is
+  `untitled-runbook-2.md`.
+- **Browse local runbooks** searches every registered folder and its
+  subfolders by path, so folder names work as tags: type `k8s` to list
+  everything under `k8s/`.
+- Put team runbooks in the repository they belong to and change them through
+  pull requests. Register the `runbooks/` folder, not the whole repository,
+  because scans are bounded.
 
-  ````markdown
-  # Restart a deployment
+On Linux `settings.toml` is `~/.config/warpeer/settings.toml`. See
+[local runbooks](docs/local-runbooks.md) for scan limits and path rules.
 
-  Make sure your kube context points at the right cluster.
+**New File** opens a plain editor, not a runbook. A file you write there gets Run
+buttons once it is saved as `.md` in a runbook folder and opened through Browse
+local runbooks.
 
-  ```sh
-  kubectl config current-context
-  ```
+## The terminal
 
-  ```sh
-  kubectl rollout restart deployment/web
-  ```
-  ````
+Apart from runbooks, Cyberterm 2077 keeps most of Warp's local terminal:
 
-- Only fenced blocks run. Use `sh`, `bash` or a similar shell tag; a bare
-  command in a paragraph is plain text.
-- Use project folders for runbooks that belong in Git review, and register
-  documentation subfolders rather than whole repositories, since scans are
-  bounded.
+- GPU-rendered terminal with IME support
+- Tabs, vertical tabs, split panes and saved pane layouts
+- Command history, completions, global search and a code review view
+- A command palette (**CP** in the toolbar) for every action
+- Tab privacy with biometric unlock and pane previews
+- A control center for local CLI agents working in Git worktrees
+- Toolbar buttons for New Window, New Tab, New File and New Runbook
+- 600+ bundled color themes, including **Cyberterm Neon**
 
-See [local runbooks](docs/local-runbooks.md) for configuration and scan limits.
+![A terminal tab in the Cyberterm Neon theme, showing command blocks with their prompt, duration and output.](docs/images/terminal.png)
 
-## Font configuration
+### Theme and fonts
 
-To use an installed font throughout the terminal, embedded editor, Markdown
-content, menus and tabs, set the three families in `settings.toml`:
+Open the theme chooser (from Settings or the command palette) and pick
+**Cyberterm Neon**. It is a dark violet theme with cyan, magenta and yellow
+accents. Every ANSI color except black, which is meant as a background, has at
+least 4.5:1 contrast against it.
+
+Fonts are not bundled. Install any font you like and set it for the terminal,
+the editor and Markdown, and the menus and tabs:
 
 ```toml
 [appearance.text]
-font_name = "Fixedsys Excelsior"
-ai_font_name = "Fixedsys Excelsior"
-ui_font_name = "Fixedsys Excelsior"
+font_name = "JetBrains Mono"
+ai_font_name = "JetBrains Mono"
+ui_font_name = "Rajdhani"
 ```
 
-An empty `ui_font_name` uses the platform default. Missing UI fonts fall back to
-that default. Font sizes remain independent of the family selection; icons use
-the existing SVG assets.
+`ui_font_name = ""` uses the platform default, and a missing font falls back to
+it. Free fonts that fit the look include Share Tech Mono and JetBrains Mono for
+the terminal and Rajdhani or Orbitron for the UI.
+
+## Install
+
+Builds come from GitHub Actions for Linux x86-64, Windows x86-64 and macOS on
+Apple Silicon. Download them from
+[Releases](https://github.com/norandom/Cyberterm-2077/releases). Every artifact
+has a SHA-256 checksum, and tagged releases are signed.
+
+- **Linux:** install `cyberterm2077-linux-x86_64.deb`, or extract the `.tar.gz`
+  and run `./cyberterm2077`. Builds target Ubuntu 24.04 (glibc 2.39 or newer)
+  and need a graphical session, fontconfig, ALSA, X11 or Wayland and a working
+  GPU driver.
+- **Windows:** run `cyberterm2077-windows-x86_64-setup.exe`, or extract the zip
+  and run `cyberterm2077.exe`. Builds are unsigned.
+- **macOS:** open the DMG and copy Cyberterm 2077 to Applications. The app is
+  ad-hoc signed, not notarized.
+
+### Upgrading from Warpeer
+
+The binary is now `cyberterm2077`. Settings, history and runbook folders stay
+where they were: data still lives in the `warpeer` directories (`~/.warpeer`,
+`~/.config/warpeer`, `~/.local/state/warpeer` on Linux), so a new install picks
+them up. Warpeer v0.1.5 and older can't update themselves to the new name.
+Install Cyberterm 2077 once by hand; the `.deb` replaces the `warpeer` package.
+
+## Network use
+
+Cyberterm 2077 makes one kind of request on its own: once a day it asks this
+repository's GitHub Releases whether a newer signed version exists. It
+downloads and installs an update only when you click to apply it, and it checks
+the signature first. `.deb` installs never self-update; use your package
+manager. Everything else that touches the network is something you run in the
+terminal.
 
 ## Build from source
 
-The toolchain is pinned in `rust-toolchain.toml` (Rust 1.100.0). Native build
-dependencies are listed in `.github/workflows/build-desktop.yml`; Linux users
-with Nix can enter the provided development environment with `nix develop`.
+The toolchain is pinned in `rust-toolchain.toml`. Native build dependencies are
+listed in `.github/workflows/build-desktop.yml`. You also need `protoc` (on
+Debian and Ubuntu, `apt install protobuf-compiler`).
 
 ```sh
-CARGO_FULL_PROFILE=release-desktop CARGO_BIN_NAME=warpeer WARP_APP_NAME=Warpeer \
-  cargo build --locked -p warp --bin warpeer --no-default-features --features warpeer --profile release-desktop
+CARGO_FULL_PROFILE=release-desktop CARGO_BIN_NAME=cyberterm2077 WARP_APP_NAME="Cyberterm 2077" \
+  cargo build --locked -p warp --bin cyberterm2077 --no-default-features --features warpeer --profile release-desktop
 python3 script/warpeer/package-desktop.py linux # or windows / macos
 ```
 
-The desktop profile disables LTO to reduce build memory use. It uses the
-terminal-only Warpeer features, with no login or trial mode. Before sending
-changes, check the product profile:
+Build GUI binaries with your system toolchain. A binary built inside
+`nix develop` links against Nix's glibc and can't load the system's X11 and
+Wayland libraries. If your shell sets `CC` to another compiler such as Intel's
+`icx`, build with `CC=gcc CXX=g++`.
+
+The internal Cargo feature, crates and scripts still use the old `warpeer`
+name. Before sending changes, check the product profile:
 
 ```sh
 ./script/verify-warpeer-profile
@@ -144,10 +282,9 @@ changes, check the product profile:
 
 ## License
 
-Warpeer is a modified version of Warp. The `warpui_core` and `warpui` crates are licensed under
-the [MIT license](LICENSE-MIT). All other code is licensed under the
-[GNU Affero General Public License v3.0](LICENSE-AGPL). See [NOTICE](NOTICE) for attribution
-details.
+Cyberterm 2077 is a modified version of Warp. The `warpui_core` and `warpui`
+crates are licensed under the [MIT license](LICENSE-MIT). All other code is
+licensed under the [GNU Affero General Public License v3.0](LICENSE-AGPL). See
+[NOTICE](NOTICE) for attribution.
 
-Warpeer is an independent project. It is not affiliated with, endorsed by, or supported by
-Warp (Denver Technologies, Inc.). "Warp" is a trademark of its respective owner.
+"Warp" is a trademark of its respective owner.

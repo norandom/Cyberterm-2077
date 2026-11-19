@@ -9,8 +9,12 @@ Open the command palette and choose **Add local runbook folder**. Choose a folde
 containing `.md` or `.markdown` documents, then choose **Browse local runbooks**.
 Repeat Add to include more folders. Subfolders are included and paths distinguish
 files with the same name. Opening a result displays the existing Markdown
-notebook viewer. Use a shell block's Run button when you want to execute it;
-browsing and opening documents never runs their commands.
+notebook viewer. Browsing and opening documents never runs their commands.
+
+A fenced block tagged `sh`, `shell`, `bash`, `zsh`, `fish`, `pwsh`, `powershell`
+or `ps1` gets a **Run in terminal** button (Ctrl+Enter when the block is
+selected). It copies the command into the active terminal's input. Nothing
+executes until you press Enter there.
 
 ````markdown
 # Inspect the working tree

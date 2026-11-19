@@ -2,10 +2,10 @@
 Unicode true
 !include "MUI2.nsh"
 !include "FileFunc.nsh"
-Name "Warpeer"
+Name "Cyberterm 2077"
 OutFile "${OUTPUT}"
-InstallDir "$LOCALAPPDATA\Programs\Warpeer"
-InstallDirRegKey HKCU "Software\Warpeer" "InstallDir"
+InstallDir "$LOCALAPPDATA\Programs\Cyberterm 2077"
+InstallDirRegKey HKCU "Software\Cyberterm 2077" "InstallDir"
 RequestExecutionLevel user
 SetCompressor /SOLID lzma
 !define MUI_ABORTWARNING
@@ -20,35 +20,35 @@ SetCompressor /SOLID lzma
 
 Function .onVerifyInstDir
   ${GetFileName} "$INSTDIR" $0
-  StrCmp $0 "Warpeer" valid
+  StrCmp $0 "Cyberterm 2077" valid
   Abort
   valid:
 FunctionEnd
 
-Section "Warpeer"
+Section "Cyberterm 2077"
   SetShellVarContext current
   SetOutPath "$INSTDIR"
   ; Abort safely if Windows prevents overwriting an app that is still running.
   SetOverwrite on
   File /r "${SOURCE}\*"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
-  CreateDirectory "$SMPROGRAMS\Warpeer"
-  CreateShortcut "$SMPROGRAMS\Warpeer\Warpeer.lnk" "$INSTDIR\warpeer.exe"
-  WriteRegStr HKCU "Software\Warpeer" "InstallDir" "$INSTDIR"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Warpeer" "DisplayName" "Warpeer"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Warpeer" "DisplayVersion" "${VERSION}"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Warpeer" "UninstallString" '"$INSTDIR\Uninstall.exe"'
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Warpeer" "DisplayIcon" "$INSTDIR\warpeer.exe"
-  WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Warpeer" "NoModify" 1
-  WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Warpeer" "NoRepair" 1
+  CreateDirectory "$SMPROGRAMS\Cyberterm 2077"
+  CreateShortcut "$SMPROGRAMS\Cyberterm 2077\Cyberterm 2077.lnk" "$INSTDIR\cyberterm2077.exe"
+  WriteRegStr HKCU "Software\Cyberterm 2077" "InstallDir" "$INSTDIR"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Cyberterm 2077" "DisplayName" "Cyberterm 2077"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Cyberterm 2077" "DisplayVersion" "${VERSION}"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Cyberterm 2077" "UninstallString" '"$INSTDIR\Uninstall.exe"'
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Cyberterm 2077" "DisplayIcon" "$INSTDIR\cyberterm2077.exe"
+  WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Cyberterm 2077" "NoModify" 1
+  WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Cyberterm 2077" "NoRepair" 1
 SectionEnd
 
 Section "Uninstall"
   SetShellVarContext current
-  Delete "$SMPROGRAMS\Warpeer\Warpeer.lnk"
-  RMDir "$SMPROGRAMS\Warpeer"
+  Delete "$SMPROGRAMS\Cyberterm 2077\Cyberterm 2077.lnk"
+  RMDir "$SMPROGRAMS\Cyberterm 2077"
   ; Remove only distribution files. User configuration lives outside this folder.
-  Delete "$INSTDIR\warpeer.exe"
+  Delete "$INSTDIR\cyberterm2077.exe"
   Delete "$INSTDIR\warpeer-update-helper.exe"
   Delete "$INSTDIR\conpty.dll"
   Delete "$INSTDIR\dxcompiler.dll"
@@ -64,6 +64,6 @@ Section "Uninstall"
   RMDir /r "$INSTDIR\x64"
   Delete "$INSTDIR\Uninstall.exe"
   RMDir "$INSTDIR"
-  DeleteRegKey HKCU "Software\Warpeer"
-  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Warpeer"
+  DeleteRegKey HKCU "Software\Cyberterm 2077"
+  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Cyberterm 2077"
 SectionEnd

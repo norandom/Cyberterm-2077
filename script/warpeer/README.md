@@ -1,4 +1,4 @@
-# Warpeer builds, installers, and updates
+# Cyberterm 2077 builds, installers, and updates
 
 The desktop workflow uses Dagger for Linux builds, checks, packaging, and release
 signing. Native macOS and Windows builds use the same checked-in build driver
@@ -60,9 +60,9 @@ cargo install zipsign --version '=0.2.2' --locked
 umask 077
 zipsign gen-key /secure/path/warpeer-release.key /secure/path/warpeer-release.pub
 python3 -c 'from pathlib import Path; print(Path("/secure/path/warpeer-release.pub").read_bytes().hex())' |
-  gh variable set WARPEER_UPDATE_PUBLIC_KEY --repo norandom/warpeer
+  gh variable set WARPEER_UPDATE_PUBLIC_KEY --repo norandom/Cyberterm-2077
 base64 -w0 /secure/path/warpeer-release.key |
-  gh secret set WARPEER_RELEASE_SIGNING_KEY --env release --repo norandom/warpeer
+  gh secret set WARPEER_RELEASE_SIGNING_KEY --env release --repo norandom/Cyberterm-2077
 ```
 
 `base64 -w0` above is GNU/Linux syntax; on macOS use `base64 -i FILE | tr -d '\n'`.
@@ -102,13 +102,13 @@ Build the current `warpeer` terminal-only product for the host architecture:
 ./script/warpeer/build-dmg
 ```
 
-The script always replaces `build/warpeer/Warpeer.dmg`. The complete
+The script always replaces `build/warpeer/Cyberterm2077.dmg`. The complete
 Cargo target directory, staging bundle, and temporary disk image live in an
 isolated temporary directory and are removed after every successful or failed
 build. `build/` is intentionally ignored by Git. The default mode creates an
 ad-hoc signed local artifact.
 
-The installer window uses a native Finder background and positions Warpeer and
+The installer window uses a native Finder background and positions Cyberterm 2077 and
 Applications in a fixed layout. The disk image does not package background
 artwork or a custom volume icon.
 

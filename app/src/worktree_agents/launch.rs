@@ -87,7 +87,7 @@ fn native_resume_command(target: &NativeResumeTarget, shell_type: ShellType) -> 
         .collect::<Vec<_>>()
         .join(" ");
     let diagnostic = shell_quote_arg(
-        &format!("Warpeer: {program} is unavailable; exact session was not resumed."),
+        &format!("Cyberterm 2077: {program} is unavailable; exact session was not resumed."),
         shell_type,
     );
     let worktree = shell_quote_arg(&target.worktree.to_string_lossy(), shell_type);

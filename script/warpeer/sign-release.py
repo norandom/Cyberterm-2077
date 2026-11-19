@@ -10,14 +10,14 @@ import sys
 import tempfile
 
 ARCHIVES = (
-    "warpeer-linux-x86_64.tar.gz",
-    "warpeer-windows-x86_64.zip",
+    "cyberterm2077-linux-x86_64.tar.gz",
+    "cyberterm2077-windows-x86_64.zip",
 )
 DETACHED = (
-    "warpeer-macos-aarch64.dmg",
-    "warpeer-linux-x86_64.deb",
-    "warpeer-linux-x86_64.bin",
-    "warpeer-windows-x86_64-setup.exe",
+    "cyberterm2077-macos-aarch64.dmg",
+    "cyberterm2077-linux-x86_64.deb",
+    "cyberterm2077-linux-x86_64.bin",
+    "cyberterm2077-windows-x86_64-setup.exe",
 )
 
 
@@ -64,8 +64,8 @@ def sign(dist):
                             "--output", str(signature), "--force"], check=True)
             subprocess.run(["zipsign", "verify", "separate", str(path), str(signature), str(pub)], check=True)
             expected.add(signature.name)
-    (dist / "warpeer-release.pub").write_bytes(public)
-    expected.add("warpeer-release.pub")
+    (dist / "cyberterm2077-release.pub").write_bytes(public)
+    expected.add("cyberterm2077-release.pub")
     # Hash the signed bytes, never the unsigned build artifacts.
     for name in sorted(expected):
         path = dist / name

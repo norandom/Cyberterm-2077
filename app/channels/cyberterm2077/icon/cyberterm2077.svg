@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- Cyberterm 2077 app icon. Original design: chamfered dark tile, neon prompt with glitch offset. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1A1030"/>
+      <stop offset="0.55" stop-color="#0D0B1C"/>
+      <stop offset="1" stop-color="#05050B"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#00F0FF"/>
+      <stop offset="1" stop-color="#FF2BD6"/>
+    </linearGradient>
+    <pattern id="scan" width="8" height="16" patternUnits="userSpaceOnUse">
+      <rect width="8" height="3" fill="#FFFFFF" fill-opacity="0.035"/>
+    </pattern>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="14" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <clipPath id="tile">
+      <path id="tilePath" d="M156 64 H800 L960 224 V828 Q960 960 828 960 H196 Q64 960 64 828 V196 Q64 64 196 64 Z"/>
+    </clipPath>
+  </defs>
+
+  <!-- tile with chamfered top-right corner -->
+  <path d="M156 64 H800 L960 224 V828 Q960 960 828 960 H196 Q64 960 64 828 V196 Q64 64 196 64 Z" fill="url(#bg)"/>
+  <g clip-path="url(#tile)">
+    <rect x="0" y="0" width="1024" height="1024" fill="url(#scan)"/>
+    <!-- faint perspective grid at the bottom -->
+    <g stroke="#FF2BD6" stroke-opacity="0.18" stroke-width="4">
+      <line x1="64" y1="800" x2="960" y2="800"/>
+      <line x1="64" y1="860" x2="960" y2="860"/>
+      <line x1="64" y1="930" x2="960" y2="930"/>
+      <line x1="512" y1="760" x2="512" y2="960"/>
+      <line x1="380" y1="760" x2="240" y2="960"/>
+      <line x1="644" y1="760" x2="784" y2="960"/>
+      <line x1="250" y1="760" x2="0" y2="960"/>
+      <line x1="774" y1="760" x2="1024" y2="960"/>
+    </g>
+  </g>
+  <!-- neon edge -->
+  <path d="M156 64 H800 L960 224 V828 Q960 960 828 960 H196 Q64 960 64 828 V196 Q64 64 196 64 Z"
+        fill="none" stroke="url(#edge)" stroke-width="14" stroke-linejoin="round"/>
+  <!-- corner accent on the chamfer -->
+  <path d="M760 110 H800 L914 224 V264 Z" fill="#F7E733"/>
+
+  <!-- glitch offsets of the chevron -->
+  <path d="M250 312 L480 478 L250 644" fill="none" stroke="#FF2BD6" stroke-width="76"
+        stroke-linecap="square" stroke-linejoin="miter" transform="translate(-14 10)" opacity="0.85"/>
+  <path d="M250 312 L480 478 L250 644" fill="none" stroke="#00F0FF" stroke-width="76"
+        stroke-linecap="square" stroke-linejoin="miter" filter="url(#glow)"/>
+  <!-- cursor underscore -->
+  <rect x="548" y="590" width="240" height="66" fill="#F7E733" filter="url(#glow)"/>
+  <!-- glitch slice -->
+  <rect x="214" y="462" width="300" height="12" fill="#0D0B1C"/>
+</svg>

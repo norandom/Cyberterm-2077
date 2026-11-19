@@ -3,7 +3,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-icon_dir="$repo_root/app/channels/warpeer/icon/no-padding"
+icon_dir="$repo_root/app/channels/cyberterm2077/icon/no-padding"
 source_png="$icon_dir/source.png"
 processed_png="$icon_dir/1024x1024.png"
 bundled_png="$repo_root/app/assets/bundled/png/warpeer.png"

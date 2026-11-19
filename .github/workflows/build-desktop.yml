@@ -34,7 +34,7 @@ jobs:
           args: linux --source=. --tag=${{ github.ref_name }} --public-key=${{ vars.WARPEER_UPDATE_PUBLIC_KEY }} export --path=./build/artifacts
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: warpeer-linux-x86_64
+          name: cyberterm2077-linux-x86_64
           path: build/artifacts/*
           if-no-files-found: error
           retention-days: 14
@@ -63,14 +63,14 @@ jobs:
         run: python3 script/warpeer/ci-native.py ${{ matrix.platform }} --install-deps --smoke-installers
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: warpeer-${{ matrix.platform }}-${{ matrix.arch }}
+          name: cyberterm2077-${{ matrix.platform }}-${{ matrix.arch }}
           path: dist/*
           if-no-files-found: error
           retention-days: 14
 
   release:
     needs: [checks, linux, native]
-    if: github.repository == 'norandom/warpeer' && startsWith(github.ref, 'refs/tags/v') && github.event_name == 'push'
+    if: github.repository == 'norandom/Cyberterm-2077' && startsWith(github.ref, 'refs/tags/v') && github.event_name == 'push'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: release
@@ -85,7 +85,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          pattern: warpeer-*
+          pattern: cyberterm2077-*
           path: build/unsigned
           merge-multiple: true
       - name: Sign and verify release through Dagger
@@ -100,5 +100,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GIT_RELEASE_TAG" build/signed/* --verify-tag --draft --title "Warpeer $GIT_RELEASE_TAG" --generate-notes
+          gh release create "$GIT_RELEASE_TAG" build/signed/* --verify-tag --draft --title "Cyberterm 2077 $GIT_RELEASE_TAG" --generate-notes
           gh release edit "$GIT_RELEASE_TAG" --draft=false --latest

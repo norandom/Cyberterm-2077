@@ -23,7 +23,7 @@ path = "src/bin/oss.rs"
 test = false
 
 [[bin]]
-name = "warpeer"
+name = "cyberterm2077"
 path = "src/bin/warpeer.rs"
 test = false
 
@@ -1203,12 +1203,12 @@ resources = ["assets/onboarding"]
 icon = ["channels/oss/icon/no-padding/512x512.png", "channels/oss/icon/no-padding/icon.ico"]
 short_description = "The open-source, cloud-backed terminal for individuals and teams."
 
-[package.metadata.bundle.bin.warpeer]
+[package.metadata.bundle.bin.cyberterm2077]
 category = "public.app-category.developer-tools"
-copyright = "Copyright 2026 Warpeer contributors"
+copyright = "Copyright 2026 Cyberterm 2077 contributors"
 identifier = "com.matrixme.warpeer"
-name = "Warpeer"
-icon = ["channels/warpeer/icon/no-padding/icon.icns"]
+name = "Cyberterm 2077"
+icon = ["channels/cyberterm2077/icon/no-padding/icon.icns"]
 short_description = "A focused terminal workspace."
 
 [package.metadata.bundle.bin.stable]

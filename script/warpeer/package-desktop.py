@@ -14,7 +14,7 @@ platform = sys.argv[1]
 if platform not in ("linux", "windows", "macos"):
     raise SystemExit("Expected linux, windows or macos")
 arch = "aarch64" if platform == "macos" else "x86_64"
-name = f"warpeer-{platform}-{arch}"
+name = f"cyberterm2077-{platform}-{arch}"
 dist = Path("dist")
 staging = Path("build") / name
 if staging.exists():
@@ -23,16 +23,16 @@ staging.mkdir(parents=True)
 dist.mkdir(exist_ok=True)
 payload = staging
 if platform == "macos":
-    payload = staging / "Warpeer.app/Contents/MacOS"
+    payload = staging / "Cyberterm 2077.app/Contents/MacOS"
     payload.mkdir(parents=True)
-    resources = staging / "Warpeer.app/Contents/Resources"
+    resources = staging / "Cyberterm 2077.app/Contents/Resources"
 else:
     resources = staging / "resources"
 metadata = resources / "bundled/metadata"
 metadata.mkdir(parents=True)
 version = os.environ.get("GIT_RELEASE_TAG") or subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], text=True).strip()
-(metadata / "version.json").write_text(json.dumps({"warp_version": version, "product": "Warpeer"}) + "\n")
-exe = "warpeer.exe" if platform == "windows" else "warpeer"
+(metadata / "version.json").write_text(json.dumps({"warp_version": version, "product": "Cyberterm 2077"}) + "\n")
+exe = "cyberterm2077.exe" if platform == "windows" else "cyberterm2077"
 shutil.copy2(Path("target/release-desktop") / exe, payload / exe)
 for filename in ("LICENSE-AGPL", "LICENSE-MIT", "NOTICE"):
     shutil.copy2(filename, staging / filename)
@@ -45,14 +45,14 @@ if platform == "windows":
     (staging / "x64").mkdir()
     shutil.copy2(assets / "OpenConsole.exe", staging / "x64/OpenConsole.exe")
 if platform == "macos":
-    app = staging / "Warpeer.app"
+    app = staging / "Cyberterm 2077.app"
     source = Path("app/src/bin/warpeer.rs").read_text()
     plist_xml = re.search(r'r#"(.*?)"#\.as_bytes', source, re.S).group(1).strip()
     info = plistlib.loads(plist_xml.encode())
     app_version = version.removeprefix("v") if re.fullmatch(r"v\d+\.\d+\.\d+", version) else "0.0.0"
-    info.update(CFBundleShortVersionString=app_version, CFBundleVersion=app_version, CFBundleIconFile="warpeer.icns", LSMinimumSystemVersion="11.0")
+    info.update(CFBundleShortVersionString=app_version, CFBundleVersion=app_version, CFBundleIconFile="cyberterm2077.icns", LSMinimumSystemVersion="11.0")
     (app / "Contents/Info.plist").write_bytes(plistlib.dumps(info))
-    shutil.copy2("app/channels/warpeer/icon/no-padding/icon.icns", resources / "warpeer.icns")
+    shutil.copy2("app/channels/cyberterm2077/icon/no-padding/icon.icns", resources / "cyberterm2077.icns")
     plugin = Path("target/release-desktop/WarpDockTilePlugin.docktileplugin")
     if plugin.exists():
         (app / "Contents/PlugIns").mkdir()
@@ -63,7 +63,7 @@ if platform == "macos":
     subprocess.run(["codesign", "--verify", "--deep", "--strict", str(app)], check=True)
     (staging / "Applications").symlink_to("/Applications")
     archive = dist / (name + ".dmg")
-    subprocess.run(["hdiutil", "create", "-ov", "-volname", "Warpeer", "-srcfolder", str(staging), "-format", "UDZO", str(archive)], check=True)
+    subprocess.run(["hdiutil", "create", "-ov", "-volname", "Cyberterm 2077", "-srcfolder", str(staging), "-format", "UDZO", str(archive)], check=True)
 else:
     archive = Path(shutil.make_archive(str(dist / name),
         "zip" if platform == "windows" else "gztar", staging.parent, name))
@@ -76,5 +76,5 @@ if platform == "linux":
 elif platform == "windows":
     nsis = shutil.which("makensis") or r"C:\Program Files (x86)\NSIS\makensis.exe"
     subprocess.run([nsis, "/DVERSION=" + version, "/DSOURCE=" + str(staging.resolve()),
-                    "/DOUTPUT=" + str((dist / "warpeer-windows-x86_64-setup.exe").resolve()),
+                    "/DOUTPUT=" + str((dist / "cyberterm2077-windows-x86_64-setup.exe").resolve()),
                     "script/warpeer/installer.nsi"], check=True)

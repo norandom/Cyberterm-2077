@@ -15,7 +15,7 @@ impl ProductProfile {
     pub(crate) fn display_name(self) -> &'static str {
         match self {
             Self::FullWarp => "Warp",
-            Self::TerminalOnly => "Warpeer",
+            Self::TerminalOnly => "Cyberterm 2077",
         }
     }
 

@@ -218,8 +218,8 @@ async fn query_threads_inner() -> Result<Vec<RawThread>, CodexSnapshotError> {
         "initialize",
         json!({
             "clientInfo": {
-                "name": "warpeer",
-                "title": "Warpeer",
+                "name": "cyberterm2077",
+                "title": "Cyberterm 2077",
                 "version": env!("CARGO_PKG_VERSION")
             }
         }),

@@ -21,7 +21,7 @@ def main():
     parser.add_argument("--smoke-installers", action="store_true")
     args = parser.parse_args()
     os.environ.setdefault("CARGO_BUILD_JOBS", "1" if args.platform == "macos" else "2")
-    os.environ.update(CARGO_FULL_PROFILE="release-desktop", CARGO_BIN_NAME="warpeer", WARP_APP_NAME="Warpeer")
+    os.environ.update(CARGO_FULL_PROFILE="release-desktop", CARGO_BIN_NAME="cyberterm2077", WARP_APP_NAME="Cyberterm 2077")
     os.environ.setdefault("GIT_RELEASE_TAG", "development")
     if args.platform == "macos":
         if args.install_deps:
@@ -50,7 +50,7 @@ def main():
         run(sys.executable, "script/warpeer/sign-release.py", "--validate")
     if args.check_only:
         return
-    run("cargo", "build", "--locked", "-p", "warp", "--bin", "warpeer", "--no-default-features", "--features", "warpeer", "--profile", "release-desktop")
+    run("cargo", "build", "--locked", "-p", "warp", "--bin", "cyberterm2077", "--no-default-features", "--features", "warpeer", "--profile", "release-desktop")
     if args.platform == "windows":
         # The helper runs from a temporary directory without the app's VC runtime DLLs.
         helper_env = os.environ.copy()
@@ -65,21 +65,21 @@ def main():
         # Ephemeral CI runner only: exercises installation, quoted uninstall
         # registration, required payload files, and uninstallation.
         with tempfile.TemporaryDirectory(prefix="warpeer-installer-test-") as temporary:
-            installed = Path(temporary) / "Warpeer"
-            setup = Path("dist/warpeer-windows-x86_64-setup.exe").resolve()
+            installed = Path(temporary) / "Cyberterm 2077"
+            setup = Path("dist/cyberterm2077-windows-x86_64-setup.exe").resolve()
             try:
                 run(str(setup), "/S", f"/D={installed}")
-                for filename in ["warpeer.exe", "warpeer-update-helper.exe", "Uninstall.exe", "resources/bundled/metadata/version.json"]:
+                for filename in ["cyberterm2077.exe", "warpeer-update-helper.exe", "Uninstall.exe", "resources/bundled/metadata/version.json"]:
                     if not (installed / filename).is_file():
                         raise RuntimeError(f"Installer is missing {filename}")
-                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Warpeer") as key:
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Cyberterm 2077") as key:
                     command = winreg.QueryValueEx(key, "UninstallString")[0]
                     if command != f'"{installed / "Uninstall.exe"}"':
                         raise RuntimeError("Uninstall command is not correctly quoted")
             finally:
                 if (installed / "Uninstall.exe").exists():
                     run(str(installed / "Uninstall.exe"), "/S", f"_?={installed}")
-            if (installed / "warpeer.exe").exists():
+            if (installed / "cyberterm2077.exe").exists():
                 raise RuntimeError("Uninstaller left the executable behind")
 
 

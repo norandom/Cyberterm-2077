@@ -207,3 +207,31 @@ fn buffer_block_image_partial_eq_considers_title() {
     };
     assert_eq!(titled, titled_again);
 }
+
+#[test]
+fn powershell_fences_are_runnable_shell_blocks() {
+    for lang in [
+        "pwsh",
+        "powershell",
+        "PowerShell",
+        "ps1",
+        "bash",
+        "zsh",
+        "fish",
+        "sh",
+    ] {
+        let block = CodeBlockText {
+            lang: lang.to_string(),
+            code: "Get-ChildItem\n".to_string(),
+        };
+        assert_eq!(CodeBlockType::from(&block), CodeBlockType::Shell, "{lang}");
+    }
+    let python = CodeBlockText {
+        lang: "python".to_string(),
+        code: "print(1)\n".to_string(),
+    };
+    assert!(matches!(
+        CodeBlockType::from(&python),
+        CodeBlockType::Code { .. }
+    ));
+}

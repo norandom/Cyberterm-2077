@@ -33,15 +33,15 @@ embed_plist::embed_info_plist_bytes!(r#"
     <key>CFBundleDevelopmentRegion</key>
     <string>English</string>
     <key>CFBundleDisplayName</key>
-    <string>Warpeer</string>
+    <string>Cyberterm 2077</string>
     <key>CFBundleExecutable</key>
-    <string>warpeer</string>
+    <string>cyberterm2077</string>
     <key>CFBundleIdentifier</key>
     <string>com.matrixme.warpeer</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>Warpeer</string>
+    <string>Cyberterm 2077</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -53,9 +53,9 @@ embed_plist::embed_info_plist_bytes!(r#"
     <key>UIDesignRequiresCompatibility</key>
     <true/>
     <key>CFBundleURLTypes</key>
-    <array><dict><key>CFBundleURLName</key><string>Warpeer</string><key>CFBundleURLSchemes</key><array><string>warpeer</string></array></dict></array>
+    <array><dict><key>CFBundleURLName</key><string>Cyberterm 2077</string><key>CFBundleURLSchemes</key><array><string>warpeer</string></array></dict></array>
     <key>NSHumanReadableCopyright</key>
-    <string>Copyright 2026 Warpeer contributors</string>
+    <string>Copyright 2026 Cyberterm 2077 contributors</string>
     </dict>
     </plist>
 "#.as_bytes());

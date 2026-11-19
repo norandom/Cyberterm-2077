@@ -1685,7 +1685,7 @@ fn add_open_setting_pages_as_editable_binding(app: &mut AppContext) {
             BindingDescription::new("Open Settings: About").with_custom_description(
                 bindings::MAC_MENUS_CONTEXT,
                 if crate::product_profile::is_terminal_only() {
-                    "About Warpeer"
+                    "About Cyberterm 2077"
                 } else {
                     "About Warp"
                 },

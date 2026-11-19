@@ -1,16 +1,19 @@
-//! GitHub release updates for the portable Warpeer distribution.
+//! GitHub release updates for the portable Cyberterm 2077 distribution.
 //! Blocking operations: callers must run check/install off the UI thread.
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
 use anyhow::{Context, Result, bail, ensure};
 use self_update::backends::github::Update;
 use semver::Version;
-use std::{
-    path::{Path, PathBuf},
-    time::Duration,
-};
 #[cfg(any(target_os = "macos", test))]
 mod macos;
 
-pub const RELEASES_URL: &str = "https://github.com/norandom/warpeer/releases";
+pub const RELEASES_URL: &str = "https://github.com/norandom/Cyberterm-2077/releases";
+pub const REPO_NAME: &str = "Cyberterm-2077";
+pub const PRODUCT: &str = "Cyberterm 2077";
+pub const BIN_NAME: &str = "cyberterm2077";
+pub const APP_BUNDLE: &str = "Cyberterm 2077.app";
 pub const BUILD_TAG: &str = match option_env!("GIT_RELEASE_TAG") {
     Some(tag) => tag,
     None => "development",
@@ -41,7 +44,7 @@ fn platform() -> Result<&'static str> {
         ("linux", "x86_64") => Ok("linux-x86_64"),
         ("windows", "x86_64") => Ok("windows-x86_64"),
         ("macos", "aarch64") => Ok("macos-aarch64"),
-        _ => bail!("No signed Warpeer releases for this platform"),
+        _ => bail!("No signed Cyberterm 2077 releases for this platform"),
     }
 }
 
@@ -50,20 +53,20 @@ fn install_root(exe: &Path, target: &str) -> Result<PathBuf> {
         let root = exe
             .ancestors()
             .nth(3)
-            .context("Expected Warpeer.app/Contents/MacOS/warpeer")?;
+            .context("Expected Cyberterm 2077.app/Contents/MacOS/cyberterm2077")?;
         ensure!(
-            root.file_name().is_some_and(|n| n == "Warpeer.app"),
-            "Install Warpeer.app before updating"
+            root.file_name().is_some_and(|n| n == APP_BUNDLE),
+            "Install Cyberterm 2077.app before updating"
         );
         Ok(root.to_path_buf())
     } else {
         let root = exe.parent().context("Executable has no parent directory")?;
-        let expected = format!("warpeer-{target}");
+        let expected = format!("{BIN_NAME}-{target}");
         ensure!(
             root.file_name()
                 .and_then(|n| n.to_str())
-                .is_some_and(|n| n == expected || n.eq_ignore_ascii_case("warpeer")),
-            "Keep portable Warpeer in its own warpeer-platform-architecture directory before updating"
+                .is_some_and(|n| n == expected || n.eq_ignore_ascii_case(BIN_NAME)),
+            "Keep portable Cyberterm 2077 in its own cyberterm2077-platform-architecture directory before updating"
         );
         ensure!(
             !root.join(".package-managed").exists(),
@@ -74,7 +77,7 @@ fn install_root(exe: &Path, target: &str) -> Result<PathBuf> {
             root.join("resources/bundled/metadata/version.json")
                 .is_file()
                 && root.join("NOTICE").is_file(),
-            "Self-update requires an extracted portable Warpeer distribution; update package-managed or development builds manually"
+            "Self-update requires an extracted portable Cyberterm 2077 distribution; update package-managed or development builds manually"
         );
         Ok(root.to_path_buf())
     }
@@ -88,8 +91,8 @@ fn updater() -> Result<Update> {
     let mut builder = Update::configure();
     builder
         .repo_owner("norandom")
-        .repo_name("warpeer")
-        .bin_name("warpeer")
+        .repo_name(REPO_NAME)
+        .bin_name(BIN_NAME)
         .target(target)
         .asset_identifier(if cfg!(windows) { ".zip" } else { ".tar.gz" })
         .current_version(current.to_string())
@@ -131,13 +134,13 @@ pub fn install_at(tag: &str, exe: &Path) -> Result<()> {
     return macos::install(tag, &root, key);
     #[cfg(not(target_os = "macos"))]
     {
-        let archive_root = format!("warpeer-{target}");
+        let archive_root = format!("{BIN_NAME}-{target}");
         let expected_tag = tag.to_owned();
         let previous_root = root.clone();
         Update::configure()
             .repo_owner("norandom")
-            .repo_name("warpeer")
-            .bin_name("warpeer")
+            .repo_name(REPO_NAME)
+            .bin_name(BIN_NAME)
             .target(target)
             .asset_identifier(if cfg!(windows) { ".zip" } else { ".tar.gz" })
             .current_version(BUILD_TAG.trim_start_matches('v'))
@@ -197,7 +200,7 @@ pub fn prepare_windows_helper() -> Result<PathBuf> {
     let exe = std::env::current_exe()?;
     let root = install_root(&exe, platform()?)?;
     let temp = tempfile::Builder::new()
-        .prefix("warpeer-update-")
+        .prefix("cyberterm2077-update-")
         .tempdir()?;
     let helper = temp.path().join("warpeer-update-helper.exe");
     std::fs::copy(root.join("warpeer-update-helper.exe"), &helper)?;
@@ -209,16 +212,19 @@ fn verify_payload(root: &Path, tag: &str, target: &str) -> Result<()> {
     let (metadata, binary) = if target.starts_with("macos") {
         (
             "Contents/Resources/bundled/metadata/version.json",
-            "Contents/MacOS/warpeer",
+            "Contents/MacOS/cyberterm2077",
         )
     } else if target.starts_with("windows") {
-        ("resources/bundled/metadata/version.json", "warpeer.exe")
+        (
+            "resources/bundled/metadata/version.json",
+            "cyberterm2077.exe",
+        )
     } else {
-        ("resources/bundled/metadata/version.json", "warpeer")
+        ("resources/bundled/metadata/version.json", "cyberterm2077")
     };
     let value: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join(metadata))?)?;
     ensure!(
-        value["product"] == "Warpeer" && value["warp_version"] == tag,
+        value["product"] == PRODUCT && value["warp_version"] == tag,
         "Signed payload does not match the requested release"
     );
     ensure!(
@@ -239,8 +245,9 @@ fn verify_payload(root: &Path, tag: &str, target: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::io::{Cursor, Write};
+
+    use super::*;
 
     #[test]
     fn signatures_reject_unsigned_wrong_key_tampering_and_renaming() {
@@ -248,13 +255,13 @@ mod tests {
         let signing = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
         let key = signing.verifying_key().to_bytes();
         for extension in ["tar.gz", "zip"] {
-            let name = format!("warpeer-linux-x86_64.{extension}");
+            let name = format!("cyberterm2077-linux-x86_64.{extension}");
             let path = temp.path().join(&name);
             let mut input = Cursor::new(Vec::new());
             if extension == "zip" {
                 let mut archive = zip::ZipWriter::new(&mut input);
                 archive
-                    .start_file("warpeer", zip::write::SimpleFileOptions::default())
+                    .start_file("cyberterm2077", zip::write::SimpleFileOptions::default())
                     .unwrap();
                 archive.write_all(b"executable payload").unwrap();
                 archive.finish().unwrap();
@@ -267,7 +274,7 @@ mod tests {
                 header.set_mode(0o755);
                 header.set_cksum();
                 archive
-                    .append_data(&mut header, "warpeer", &b"executable payload"[..])
+                    .append_data(&mut header, "cyberterm2077", &b"executable payload"[..])
                     .unwrap();
                 archive.into_inner().unwrap().finish().unwrap();
             }
@@ -311,21 +318,21 @@ mod tests {
         std::fs::create_dir_all(&metadata).unwrap();
         std::fs::write(
             metadata.join("version.json"),
-            br#"{"product":"Warpeer","warp_version":"v1.0.0"}"#,
+            br#"{"product":"Cyberterm 2077","warp_version":"v1.0.0"}"#,
         )
         .unwrap();
-        std::fs::write(temp.path().join("warpeer"), b"payload").unwrap();
+        std::fs::write(temp.path().join(BIN_NAME), b"payload").unwrap();
         assert!(verify_payload(temp.path(), "v2.0.0", "linux-x86_64").is_err());
         // A valid metadata record must still carry a binary.
-        std::fs::remove_file(temp.path().join("warpeer")).unwrap();
+        std::fs::remove_file(temp.path().join(BIN_NAME)).unwrap();
         assert!(verify_payload(temp.path(), "v1.0.0", "linux-x86_64").is_err());
     }
 
     #[test]
     fn detached_signatures_authenticate_dmg_bytes_and_filename() {
         let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("warpeer-macos-aarch64.dmg");
-        let signature = temp.path().join("warpeer-macos-aarch64.dmg.sig");
+        let path = temp.path().join("cyberterm2077-macos-aarch64.dmg");
+        let signature = temp.path().join("cyberterm2077-macos-aarch64.dmg.sig");
         let signing = ed25519_dalek::SigningKey::from_bytes(&[31; 32]);
         let key = signing.verifying_key().to_bytes();
         let bytes = b"disk image bytes";
@@ -334,7 +341,7 @@ mod tests {
         let sig = zipsign_api::sign::gather_signature_data(
             &[signing],
             &hash,
-            Some(b"warpeer-macos-aarch64.dmg"),
+            Some(b"cyberterm2077-macos-aarch64.dmg"),
         )
         .unwrap();
         std::fs::write(&signature, sig).unwrap();
@@ -364,15 +371,15 @@ mod tests {
     }
     #[test]
     fn refuses_shared_install_directories() {
-        assert!(install_root(Path::new("/usr/bin/warpeer"), "linux-x86_64").is_err());
-        assert!(install_root(Path::new("/tmp/warpeer"), "macos-aarch64").is_err());
+        assert!(install_root(Path::new("/usr/bin/cyberterm2077"), "linux-x86_64").is_err());
+        assert!(install_root(Path::new("/tmp/cyberterm2077"), "macos-aarch64").is_err());
         assert_eq!(
             install_root(
-                Path::new("/Applications/Warpeer.app/Contents/MacOS/warpeer"),
+                Path::new("/Applications/Cyberterm 2077.app/Contents/MacOS/cyberterm2077"),
                 "macos-aarch64"
             )
             .unwrap(),
-            Path::new("/Applications/Warpeer.app")
+            Path::new("/Applications/Cyberterm 2077.app")
         );
     }
 }

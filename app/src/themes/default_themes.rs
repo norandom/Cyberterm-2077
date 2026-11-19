@@ -258,6 +258,33 @@ pub(super) fn solarflare_colors() -> TerminalColors {
     TerminalColors::new(SOLARFLARE_NORMAL_COLORS, SOLARFLARE_BRIGHT_COLORS)
 }
 
+// Cyberterm Neon: an original neon-on-night palette. Every color except ANSI black
+// keeps at least 4.5:1 contrast against both background gradient stops.
+const CYBERTERM_NEON_NORMAL_COLORS: AnsiColors = AnsiColors::new(
+    AnsiColor::from_u32(0x1C1A33FF),
+    AnsiColor::from_u32(0xFF4D6DFF),
+    AnsiColor::from_u32(0x3DFFA8FF),
+    AnsiColor::from_u32(0xFFE14DFF),
+    AnsiColor::from_u32(0x5C9DFFFF),
+    AnsiColor::from_u32(0xFF4FD8FF),
+    AnsiColor::from_u32(0x25E8F5FF),
+    AnsiColor::from_u32(0xCFC9EEFF),
+);
+const CYBERTERM_NEON_BRIGHT_COLORS: AnsiColors = AnsiColors::new(
+    AnsiColor::from_u32(0x8A83B8FF),
+    AnsiColor::from_u32(0xFF7A90FF),
+    AnsiColor::from_u32(0x8CFFC9FF),
+    AnsiColor::from_u32(0xFFF08AFF),
+    AnsiColor::from_u32(0x94BEFFFF),
+    AnsiColor::from_u32(0xFF8BE6FF),
+    AnsiColor::from_u32(0x8AF6FFFF),
+    AnsiColor::from_u32(0xFFFFFFFF),
+);
+
+pub(super) fn cyberterm_neon_colors() -> TerminalColors {
+    TerminalColors::new(CYBERTERM_NEON_NORMAL_COLORS, CYBERTERM_NEON_BRIGHT_COLORS)
+}
+
 pub(super) fn adeberry_colors() -> TerminalColors {
     TerminalColors::new(ADEBERRY_NORMAL_COLORS, ADEBERRY_BRIGHT_COLORS)
 }
@@ -371,6 +398,25 @@ pub(super) fn cyber_wave() -> WarpTheme {
         dark_mode_colors(),
         None,
         Some("Cyber Wave".to_string()),
+    )
+}
+
+pub(super) fn cyberterm_neon() -> WarpTheme {
+    WarpTheme::new(
+        Fill::VerticalGradient(VerticalGradient::new(
+            ColorU::from_u32(0x1A1238FF),
+            ColorU::from_u32(0x0B0A1AFF),
+        )),
+        ColorU::from_u32(0xE6E1FFFF),
+        Fill::HorizontalGradient(HorizontalGradient::new(
+            ColorU::from_u32(0xFF2E97FF),
+            ColorU::from_u32(0x25E8F5FF),
+        )),
+        Some(Fill::Solid(ColorU::from_u32(0xFFE14DFF))),
+        Some(Details::Darker),
+        cyberterm_neon_colors(),
+        None,
+        Some("Cyberterm Neon".to_string()),
     )
 }
 

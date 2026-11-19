@@ -3360,7 +3360,7 @@ fn launch(ctx: &mut warpui::AppContext, app_state: Option<AppState>, launch_mode
                     panic!("Cannot execute CLI command {command:?} on the web");
                 } else if #[cfg(feature = "warpeer")] {
                     let _ = (command, global_options);
-                    eprintln!("Warpeer does not include hosted agent commands.");
+                    eprintln!("Cyberterm 2077 does not include hosted agent commands.");
                     std::process::exit(2);
                 } else {
                     if let Err(err) = crate::ai::agent_sdk::run(ctx, command.clone(), global_options.clone()) {
