@@ -4,7 +4,9 @@ Unicode true
 !include "FileFunc.nsh"
 Name "Cyberterm 2077"
 OutFile "${OUTPUT}"
-InstallDir "$LOCALAPPDATA\Programs\Cyberterm 2077"
+; The folder name must match warpeer_update::BIN_NAME (no spaces) so self-update accepts it,
+; and NSIS cannot take a quoted /D= path.
+InstallDir "$LOCALAPPDATA\Programs\Cyberterm2077"
 InstallDirRegKey HKCU "Software\Cyberterm 2077" "InstallDir"
 RequestExecutionLevel user
 SetCompressor /SOLID lzma
@@ -20,7 +22,7 @@ SetCompressor /SOLID lzma
 
 Function .onVerifyInstDir
   ${GetFileName} "$INSTDIR" $0
-  StrCmp $0 "Cyberterm 2077" valid
+  StrCmp $0 "Cyberterm2077" valid
   Abort
   valid:
 FunctionEnd

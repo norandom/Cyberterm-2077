@@ -65,7 +65,7 @@ def main():
         # Ephemeral CI runner only: exercises installation, quoted uninstall
         # registration, required payload files, and uninstallation.
         with tempfile.TemporaryDirectory(prefix="warpeer-installer-test-") as temporary:
-            installed = Path(temporary) / "Cyberterm 2077"
+            installed = Path(temporary) / "Cyberterm2077"
             setup = Path("dist/cyberterm2077-windows-x86_64-setup.exe").resolve()
             try:
                 run(str(setup), "/S", f"/D={installed}")
