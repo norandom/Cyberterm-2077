@@ -120,7 +120,7 @@ impl EditorMetadata {
     fn try_new(desktop_file_path: PathBuf) -> Result<Self, DesktopExecError> {
         let input = std::fs::read_to_string(&desktop_file_path)?;
 
-        let entry = DesktopEntry::decode(&desktop_file_path, &input)?;
+        let entry = DesktopEntry::from_str(&desktop_file_path, &input, Some(&["en"]))?;
 
         let Some(exec) = entry.exec() else {
             return Err(DesktopExecError::NoExec);
@@ -129,7 +129,7 @@ impl EditorMetadata {
         // Doing all the calculations here to get owned versions of data fields,
         // so we can drop entry
         let exec = exec.to_string();
-        let localized_name = entry.name(Some("en")).map(|x| x.to_string());
+        let localized_name = entry.name(&["en"]).map(|x| x.to_string());
         let icon = entry.icon().map(str::to_string);
 
         Ok(Self {

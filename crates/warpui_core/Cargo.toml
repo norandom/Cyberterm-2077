@@ -71,7 +71,7 @@ ratatui = { version = "0.30", optional = true, features = [
 ] }
 raw-window-handle = "0.6.2"
 resvg.workspace = true
-rstar = "0.12.2"
+rstar = "0.14.0"
 rustc-hash.workspace = true
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json.workspace = true

@@ -28,7 +28,8 @@ pub struct Scene {
 
 #[derive(Clone, Default)]
 pub struct Layer {
-    hit_map: RTree<Rectangle<[OrderedFloat<f32>; 2]>>,
+    // rstar orders f32 coordinates internally (NaN-safe), so no OrderedFloat wrapper.
+    hit_map: RTree<Rectangle<[f32; 2]>>,
     pub clip_bounds: Option<RectF>,
     pub rects: Vec<Rect>,
     pub images: Vec<Image>,
@@ -413,8 +414,8 @@ impl Scene {
 
     pub fn is_covered(&self, position: Point) -> bool {
         // Does any layer at a higher z-index contain this point?
-        let point = [position.x().into(), position.y().into()];
-        let predicate = |l: &Layer| !l.click_through && l.hit_map.locate_at_point(&point).is_some();
+        let point = [position.x(), position.y()];
+        let predicate = |l: &Layer| !l.click_through && l.hit_map.locate_at_point(point).is_some();
 
         match position.z_index() {
             ZIndex::Normal(index) => self
