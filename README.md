@@ -225,19 +225,76 @@ the terminal and Rajdhani or Orbitron for the UI.
 
 ## Install
 
+This is personal-use software for people who can judge what they run, not an
+installer for general users. I don't hold an Apple Developer ID or a Windows
+code signing certificate, so macOS and Windows will warn you. That is expected.
+If you aren't comfortable checking a download yourself and overriding those
+warnings, don't install it.
+
 Builds come from GitHub Actions for Linux x86-64, Windows x86-64 and macOS on
 Apple Silicon. Download them from
-[Releases](https://github.com/norandom/Cyberterm-2077/releases). Every artifact
-has a SHA-256 checksum, and tagged releases are signed.
+[Releases](https://github.com/norandom/Cyberterm-2077/releases).
 
-- **Linux:** install `cyberterm2077-linux-x86_64.deb`, or extract the `.tar.gz`
-  and run `./cyberterm2077`. Builds target Ubuntu 24.04 (glibc 2.39 or newer)
-  and need a graphical session, fontconfig, ALSA, X11 or Wayland and a working
-  GPU driver.
-- **Windows:** run `cyberterm2077-windows-x86_64-setup.exe`, or extract the zip
-  and run `cyberterm2077.exe`. Builds are unsigned.
-- **macOS:** open the DMG and copy Cyberterm 2077 to Applications. The app is
-  ad-hoc signed, not notarized.
+Each artifact has a `.sha256` file. Check it before you open anything:
+
+```sh
+sha256sum -c cyberterm2077-linux-x86_64.tar.gz.sha256      # Linux
+shasum -a 256 -c cyberterm2077-macos-aarch64.dmg.sha256     # macOS
+```
+
+```powershell
+(Get-FileHash .\cyberterm2077-windows-x86_64-setup.exe -Algorithm SHA256).Hash   # compare with the .sha256 file
+```
+
+Release artifacts are also signed with this project's own release key
+(`cyberterm2077-release.pub` in each release). That signature is what the
+built-in updater checks. You can check it yourself with
+[zipsign](https://crates.io/crates/zipsign) (`cargo install zipsign --version 0.2.2`); the
+`.tar.gz` and `.zip` carry their signature inside, the other files have a
+`.sig` next to them:
+
+```sh
+zipsign verify separate cyberterm2077-macos-aarch64.dmg cyberterm2077-macos-aarch64.dmg.sig cyberterm2077-release.pub
+zipsign verify tar cyberterm2077-linux-x86_64.tar.gz cyberterm2077-release.pub
+```
+
+The signature is not an Apple or Microsoft signature, so it does
+nothing for Gatekeeper or SmartScreen.
+
+### Linux
+
+Install `cyberterm2077-linux-x86_64.deb`, or extract the `.tar.gz` and run
+`./cyberterm2077`. Builds target Ubuntu 24.04 (glibc 2.39 or newer) and need a
+graphical session, fontconfig, ALSA, X11 or Wayland and a working GPU driver.
+
+### macOS
+
+The app is ad-hoc signed and not notarized, so Gatekeeper blocks the first
+launch with a message that Apple could not check it for malicious software.
+Open the DMG, copy Cyberterm 2077 to Applications, then remove the quarantine
+flag that the browser set on the download:
+
+```sh
+xattr -dr com.apple.quarantine "/Applications/Cyberterm 2077.app"
+```
+
+After that it starts normally. Alternatively, try to open it once, then use
+System Settings > Privacy & Security > Open Anyway.
+
+### Windows
+
+The installer and executable are unsigned, so Microsoft Defender SmartScreen
+shows "Windows protected your PC" on first run. Click **More info**, then
+**Run anyway**. That warning is expected here; it only says the file has no
+known publisher.
+
+The installer is per-user and doesn't ask for administrator rights. If you use
+the zip instead, unblock the downloaded file before extracting it, so Windows
+doesn't flag every file inside:
+
+```powershell
+Unblock-File .\cyberterm2077-windows-x86_64.zip
+```
 
 ### Upgrading from Warpeer
 
